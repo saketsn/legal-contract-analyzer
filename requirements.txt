@@ -1,0 +1,36 @@
+# ==========================================
+# LEGAL CONTRACT ANALYZER — REQUIREMENTS
+# Fixed for Python 3.13 — resolves numpy conflict
+# between langchain-community and langchain-chroma
+# ==========================================
+
+# Core LangChain Framework
+langchain==0.3.25
+langchain-community==0.3.24
+langchain-core==0.3.63
+langchain-text-splitters==0.3.8
+
+# Google Gemini Integration — pinned to match langchain-core 0.3.63
+langchain-google-genai==2.1.4
+
+# Vector Database
+# langchain-chroma 0.2.x supports numpy>=2.0 — fixes Python 3.13 conflict
+langchain-chroma==0.2.3
+chromadb==0.6.3
+
+# Hybrid Search (BM25)
+rank_bm25==0.2.2
+
+# UI
+streamlit==1.45.0
+
+# Data Validation
+pydantic==2.11.4
+
+# Environment & Config
+python-dotenv==1.1.0
+
+# Document Processing
+pypdf==4.3.1
+docx2txt==0.8
+

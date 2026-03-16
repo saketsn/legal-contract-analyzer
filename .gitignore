@@ -1,0 +1,41 @@
+# ==========================================
+# .gitignore — AI Legal Contract Analyzer
+# ==========================================
+
+# Environment variables — NEVER commit API keys
+.env
+
+# Python virtual environment
+venv/
+env/
+.venv/
+
+# ChromaDB vector database — large binary files, rebuilt via main.py
+chroma_db/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test outputs
+.pytest_cache/
