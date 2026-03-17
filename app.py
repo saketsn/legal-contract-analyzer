@@ -88,6 +88,7 @@ SESSION_DEFAULTS = {
     "tool2_result":       None,
     "pipeline_stage":     0,
     "last_client":        None,
+    "processed_uploads":  set(), # Fixes the duplicate upload warning bug
 }
 for key, value in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -102,7 +103,6 @@ class ClauseList(BaseModel):
     clauses: List[str] = Field(
         description="All main legal section headings in the document."
     )
-
 
 class ExtractedClause(BaseModel):
     """
@@ -180,12 +180,6 @@ class FinalRiskReport(BaseModel):
 def get_files_from_dir(directory: str) -> list:
     """
     Returns sorted basenames of all .pdf and .docx files in a directory.
-
-    Args:
-        directory (str): Absolute path to folder.
-
-    Returns:
-        list[str]: Sorted filenames. Empty list if directory missing.
     """
     if not os.path.exists(directory):
         return []
@@ -195,16 +189,9 @@ def get_files_from_dir(directory: str) -> list:
         + glob.glob(os.path.join(directory, "*.docx"))
     ])
 
-
 def load_doc_text(file_path: str) -> str:
     """
     Loads a PDF or .docx document and returns its full text.
-
-    Args:
-        file_path (str): Absolute path to document.
-
-    Returns:
-        str: Full text with pages joined by newlines.
     """
     loader = (
         PyPDFLoader(file_path)
@@ -213,20 +200,13 @@ def load_doc_text(file_path: str) -> str:
     )
     return "\n".join([p.page_content for p in loader.load()])
 
-
 def log_step(role: str, content: str, status: str = "thought") -> None:
     """
     Appends one step to the ReAct trace log.
-
-    Args:
-        role    (str): Label (e.g. 'Thought', 'Action').
-        content (str): Text body of this step.
-        status  (str): thought | action | observation | human | final
     """
     st.session_state.agent_log.append({
         "role": role, "content": content, "status": status,
     })
-
 
 def reset_pipeline_for_new_client() -> None:
     """
@@ -243,17 +223,9 @@ def reset_pipeline_for_new_client() -> None:
     st.session_state.tool2_result       = None
     st.session_state.pipeline_stage     = 0
 
-
 def run_discovery_scan(file_name: str, directory: str) -> list:
     """
     Pass 1: Lightweight LLM scan returning section headings only.
-
-    Args:
-        file_name (str): Basename of the contract file.
-        directory (str): Directory containing the file.
-
-    Returns:
-        list[str]: Section heading strings found in the document.
     """
     full_text = load_doc_text(os.path.join(directory, file_name))
     llm = ChatGoogleGenerativeAI(
@@ -266,6 +238,28 @@ def run_discovery_scan(file_name: str, directory: str) -> list:
     )
     return result.clauses
 
+def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
+    """
+    Saves uploaded file if it doesn't exist.
+    
+    Returns:
+        (success: bool, message: str)
+    """
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir, exist_ok=True)
+        
+    file_path = os.path.join(target_dir, uploaded_file.name)
+    
+    if os.path.exists(file_path):
+        return (False, f"⚠️ File '{uploaded_file.name}' already exists. Skipping upload.")
+        
+    try:
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        return (True, f"✅ Uploaded '{uploaded_file.name}' successfully!")
+    except Exception as e:
+        return (False, f"❌ Upload failed: {str(e)}")
+
 
 # ==========================================
 # SECTION 6: AGENT TOOLS (FACTORY PATTERN)
@@ -274,14 +268,6 @@ def run_discovery_scan(file_name: str, directory: str) -> list:
 def make_tools(selected_client: str, selected_clauses: list, selected_playbook: str = None) -> list:
     """
     Factory: Creates all 3 agent tools with current context baked in via closure.
-
-    Args:
-        selected_client  (str):  Basename of selected client contract.
-        selected_clauses (list): Clause headings chosen by user.
-        selected_playbook (str): Basename of selected company playbook.
-
-    Returns:
-        list: [extract_contract_terms, query_playbook, generate_risk_report]
     """
 
     @tool
@@ -441,12 +427,6 @@ DATA:
 
 # ==========================================
 # SECTION 7: SIDEBAR
-# Order (top to bottom):
-#   1. Document Selection   — user's first action
-#   2. System Status        — quick health check
-#   3. 💬 Legal Assistant   — visible without scrolling
-#   4. Playbook Database    — less frequent action
-#   5. Active Guardrails    — informational, below fold is fine
 # ==========================================
 with st.sidebar:
     st.markdown(
@@ -456,7 +436,10 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # ── 1. DOCUMENT SELECTION ─────────────────────────────────────────────────
+    # ── 1. 💬 LEGAL ASSISTANT (Moved to Top) ──────────────────────────────────
+    render_chatbot(GEMINI_API_KEY)
+
+    # ── 2. DOCUMENT SELECTION ─────────────────────────────────────────────────
     st.markdown(
         '<p style="font-size:12px;font-weight:700;color:#374151;'
         'text-transform:uppercase;letter-spacing:0.8px;margin:4px 0 8px 0;">'
@@ -464,9 +447,11 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    # Fetch currently available files
     playbook_files = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
     client_files   = get_files_from_dir(CLIENT_CONTRACTS_DIR)
 
+    # Playbook Dropdown
     selected_playbook = st.selectbox(
         "Company Playbook:",
         options=playbook_files if playbook_files else ["No files found"],
@@ -474,6 +459,28 @@ with st.sidebar:
         index=0,
         key="playbook_select",
     )
+    
+    # Playbook Upload
+    uploaded_playbook = st.file_uploader(
+        "Upload Playbook",
+        type=["pdf", "docx"],
+        key="upload_playbook",
+        label_visibility="collapsed"
+    )
+    if uploaded_playbook:
+        if uploaded_playbook.name not in st.session_state.processed_uploads:
+            success, msg = save_uploaded_file(uploaded_playbook, COMPANY_PLAYBOOK_DIR)
+            if success:
+                st.success(msg)
+                st.caption("📌 Select the file from the dropdown above and click **Rebuild Playbook DB**.")
+            else:
+                st.warning(msg)
+            # Add to processed uploads so it won't trigger the warning on next rerun
+            st.session_state.processed_uploads.add(uploaded_playbook.name)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Client Dropdown
     selected_client = st.selectbox(
         "Client Contract:",
         options=client_files if client_files else ["No files found"],
@@ -481,6 +488,24 @@ with st.sidebar:
         index=0,
         key="client_select",
     )
+    
+    # Client Upload
+    uploaded_client = st.file_uploader(
+        "Upload Client Contract",
+        type=["pdf", "docx"],
+        key="upload_client",
+        label_visibility="collapsed"
+    )
+    if uploaded_client:
+        if uploaded_client.name not in st.session_state.processed_uploads:
+            success, msg = save_uploaded_file(uploaded_client, CLIENT_CONTRACTS_DIR)
+            if success:
+                st.success(msg)
+                st.caption("📌 File uploaded. Select it from the dropdown above to analyze.")
+            else:
+                st.warning(msg)
+            # Add to processed uploads so it won't trigger the warning on next rerun
+            st.session_state.processed_uploads.add(uploaded_client.name)
 
     # Auto-reset when client changes
     if selected_client != st.session_state.last_client:
@@ -490,7 +515,7 @@ with st.sidebar:
         st.session_state.selected_client = selected_client
     st.session_state.selected_client = selected_client
 
-    # ── 2. SYSTEM STATUS ──────────────────────────────────────────────────────
+    # ── 3. SYSTEM STATUS ──────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown(
         '<p style="font-size:12px;font-weight:700;color:#374151;'
@@ -526,11 +551,6 @@ with st.sidebar:
     st.markdown(f"{'✅' if playbook_files else '❌'} Playbook: {'Found' if playbook_files else 'Missing'}")
     st.markdown(f"{'✅' if client_files  else '❌'} Client Contracts: {'Found' if client_files else 'Missing'}")
 
-    # ── 3. 💬 LEGAL ASSISTANT ─────────────────────────────────────────────────
-    # Placed here so it is visible without scrolling.
-    # render_chatbot() draws the expander + full chat UI inside the sidebar.
-    render_chatbot(GEMINI_API_KEY)
-
     # ── 4. PLAYBOOK DATABASE ──────────────────────────────────────────────────
     st.markdown("---")
     st.markdown(
@@ -564,25 +584,6 @@ with st.sidebar:
                 except Exception as e:
                     st.error(f"❌ Rebuild error: {e}")
             st.rerun()
-
-    # ── 5. ACTIVE GUARDRAILS ──────────────────────────────────────────────────
-    # Moved to bottom — decorative/informational, below fold is fine.
-    st.markdown("---")
-    st.markdown(
-        '<p style="font-size:12px;font-weight:700;color:#374151;'
-        'text-transform:uppercase;letter-spacing:0.8px;margin:4px 0 8px 0;">'
-        "Active Guardrails</p>",
-        unsafe_allow_html=True,
-    )
-    for g in [
-        "Zero-Inference Rule",
-        "Verbatim Quotation Enforced",
-        "Pydantic Schema Validators",
-        "HITL Approval Gate",
-        "Sequential Tool Order",
-    ]:
-        st.markdown(f'<span class="guardrail-chip">✅ {g}</span>', unsafe_allow_html=True)
-
 
 if not client_files or not playbook_files:
     st.warning(" No documents found. Check MyFiles/Contracts folders.")

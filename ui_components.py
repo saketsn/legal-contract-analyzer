@@ -344,7 +344,7 @@ def render_hitl_gate() -> None:
 
     with col_approve:
         if st.button(
-            "✅ APPROVE — Run Full Analysis Automatically",
+            "Proceed",
             type="primary",
             use_container_width=True,
         ):
@@ -358,7 +358,7 @@ def render_hitl_gate() -> None:
             st.rerun()
 
     with col_reject:
-        if st.button("❌ REJECT — Discard and Re-select Clauses", use_container_width=True):
+        if st.button("Go back, discard clauses, and reselect", use_container_width=True):
             st.session_state.extracted_data = None
             st.session_state.rejected_flag  = True
             st.session_state.pipeline_stage = 1

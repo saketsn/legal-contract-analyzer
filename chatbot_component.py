@@ -2,10 +2,8 @@
 ================================================================================
 chatbot_component.py — Sidebar Chat Assistant
 ================================================================================
-Purpose : Renders a collapsible Legal Assistant chat panel inside the Streamlit
-          sidebar using a native st.expander. This approach is 100% stable —
-          it survives every Streamlit rerun, never disappears, and requires
-          zero JavaScript, zero iframes, and zero browser-side API calls.
+Purpose : Renders a fixed, always-visible Legal Assistant chat panel inside 
+          the Streamlit sidebar. 
 
           All state lives in st.session_state with "chatbot_" prefix to avoid
           any collision with the main pipeline session state keys.
@@ -66,8 +64,8 @@ HOW TO USE STEP BY STEP:
 8. Read the Final Risk Assessment Report
 
 HOW TO ADD DOCUMENTS:
-- Playbooks: drop .docx or .pdf into MyFiles/Contracts/company_standard/ then click Rebuild Playbook DB
-- Client contracts: drop .docx or .pdf into MyFiles/Contracts/clients/ — appears in dropdown automatically
+- Playbooks: drop .docx or .pdf into MyFiles/Contracts/company_standard/ or upload via UI, then click Rebuild Playbook DB
+- Client contracts: drop .docx or .pdf into MyFiles/Contracts/clients/ or upload via UI — appears in dropdown automatically
 
 TROUBLESHOOTING:
 - No DB for this playbook → select it and click Rebuild Playbook DB in sidebar
@@ -124,13 +122,7 @@ def _get_bot_response(user_message: str, history: list, gemini_api_key: str) -> 
 def render_chatbot(gemini_api_key: str) -> None:
     """
     Renders the Legal Assistant chat panel inside the Streamlit sidebar.
-
-    Must be called INSIDE a `with st.sidebar:` block in app.py.
-    Uses st.expander so it is collapsed by default — takes minimal space
-    but is always visible without scrolling when placed after System Status.
-
-    Chat history persists across all Streamlit reruns via session_state.
-    All keys use "chatbot_" prefix to avoid collision with pipeline state.
+    Always visible, fixed 400px height with internal scrolling.
 
     Args:
         gemini_api_key (str): GEMINI_API_KEY loaded from .env in app.py
@@ -143,7 +135,8 @@ def render_chatbot(gemini_api_key: str) -> None:
     if "chatbot_history" not in st.session_state:
         st.session_state.chatbot_history = []
 
-    st.markdown("---")
+    # Removed the duplicate st.markdown("---") from here to fix the double-spacing issue!
+
     st.markdown(
         '<p style="font-size:12px;font-weight:700;color:#374151;'
         'text-transform:uppercase;letter-spacing:0.8px;margin:4px 0 8px 0;">'
@@ -151,15 +144,13 @@ def render_chatbot(gemini_api_key: str) -> None:
         unsafe_allow_html=True,
     )
 
-    with st.expander("Ask the Legal Assistant", expanded=False):
-
-        # ── Header banner ─────────────────────────────────────────────────────
-        st.markdown(
-            """
+    # ── Header banner ─────────────────────────────────────────────────────
+    st.markdown(
+        """
 <div style="background:linear-gradient(135deg,#1E2D5E 0%,#0D9488 100%);
             padding:10px 14px;border-radius:8px;margin-bottom:10px;
             display:flex;align-items:center;gap:10px;">
-  <span style="font-size:20px;">⚖️</span>
+  <span style="font-size:20px;">🤖</span>
   <div>
     <div style="color:white;font-weight:700;font-size:13px;">Legal Assistant</div>
     <div style="color:rgba(255,255,255,0.75);font-size:10px;">
@@ -170,10 +161,14 @@ def render_chatbot(gemini_api_key: str) -> None:
               border-radius:50%;border:2px solid white;"></div>
 </div>
 """,
-            unsafe_allow_html=True,
-        )
+        unsafe_allow_html=True,
+    )
 
-        # ── Quick chips (only when no history yet) ────────────────────────────
+    # ── Fixed 400px scrollable chat container ─────────────────────────────
+    chat_container = st.container(height=400)
+
+    with chat_container:
+        # ── Quick chips (only when no history yet) ────────────────────────
         if not st.session_state.chatbot_history:
             st.markdown(
                 '<p style="font-size:11px;color:#64748b;margin:0 0 6px 0;">'
@@ -209,25 +204,31 @@ def render_chatbot(gemini_api_key: str) -> None:
 
             st.markdown("---")
 
-        # ── Chat history ──────────────────────────────────────────────────────
+        # ── Chat history ──────────────────────────────────────────────────
         for msg in st.session_state.chatbot_history:
-            avatar = "⚖️" if msg["role"] == "assistant" else "👤"
+            avatar = "🤖" if msg["role"] == "assistant" else "👤"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
-        # ── Chat input ────────────────────────────────────────────────────────
-        user_input = st.chat_input(
-            "Ask about the Legal Contract Analyzer...",
-            key="chatbot_sidebar_input",
-        )
+    # ── Chat input (Outside the fixed container) ──────────────────────────
+    user_input = st.chat_input(
+        "Ask about the Legal Contract Analyzer...",
+        key="chatbot_sidebar_input",
+    )
 
-        if user_input:
+    if user_input:
+        # Display user message instantly inside the container
+        with chat_container:
             with st.chat_message("user", avatar="👤"):
                 st.markdown(user_input)
-            st.session_state.chatbot_history.append(
-                {"role": "user", "content": user_input}
-            )
-            with st.chat_message("assistant", avatar="⚖️"):
+                
+        st.session_state.chatbot_history.append(
+            {"role": "user", "content": user_input}
+        )
+        
+        # Process and display assistant response inside the container
+        with chat_container:
+            with st.chat_message("assistant", avatar="🤖"):
                 with st.spinner("Thinking..."):
                     reply = _get_bot_response(
                         user_input,
@@ -235,18 +236,19 @@ def render_chatbot(gemini_api_key: str) -> None:
                         gemini_api_key,
                     )
                 st.markdown(reply)
-            st.session_state.chatbot_history.append(
-                {"role": "assistant", "content": reply}
-            )
-            st.rerun()
+                
+        st.session_state.chatbot_history.append(
+            {"role": "assistant", "content": reply}
+        )
+        st.rerun()
 
-        # ── Clear button (only when history exists) ───────────────────────────
-        if st.session_state.chatbot_history:
-            st.markdown("")
-            if st.button(
-                "🗑️ Clear chat",
-                key="chatbot_clear",
-                use_container_width=True,
-            ):
-                st.session_state.chatbot_history = []
-                st.rerun()
+    # ── Clear button (Outside the fixed container) ────────────────────────
+    if st.session_state.chatbot_history:
+        st.markdown("")
+        if st.button(
+            "🗑️ Clear chat",
+            key="chatbot_clear",
+            use_container_width=True,
+        ):
+            st.session_state.chatbot_history = []
+            st.rerun()
