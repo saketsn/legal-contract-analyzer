@@ -104,6 +104,7 @@ class ClauseList(BaseModel):
         description="All main legal section headings in the document."
     )
 
+
 class ExtractedClause(BaseModel):
     """
     Single clause extracted by Tool 1.
@@ -180,6 +181,12 @@ class FinalRiskReport(BaseModel):
 def get_files_from_dir(directory: str) -> list:
     """
     Returns sorted basenames of all .pdf and .docx files in a directory.
+
+    Args:
+        directory (str): Absolute path to folder.
+
+    Returns:
+        list[str]: Sorted filenames. Empty list if directory missing.
     """
     if not os.path.exists(directory):
         return []
@@ -189,9 +196,16 @@ def get_files_from_dir(directory: str) -> list:
         + glob.glob(os.path.join(directory, "*.docx"))
     ])
 
+
 def load_doc_text(file_path: str) -> str:
     """
     Loads a PDF or .docx document and returns its full text.
+
+    Args:
+        file_path (str): Absolute path to document.
+
+    Returns:
+        str: Full text with pages joined by newlines.
     """
     loader = (
         PyPDFLoader(file_path)
@@ -200,13 +214,20 @@ def load_doc_text(file_path: str) -> str:
     )
     return "\n".join([p.page_content for p in loader.load()])
 
+
 def log_step(role: str, content: str, status: str = "thought") -> None:
     """
     Appends one step to the ReAct trace log.
+
+    Args:
+        role    (str): Label (e.g. 'Thought', 'Action').
+        content (str): Text body of this step.
+        status  (str): thought | action | observation | human | final
     """
     st.session_state.agent_log.append({
         "role": role, "content": content, "status": status,
     })
+
 
 def reset_pipeline_for_new_client() -> None:
     """
@@ -223,9 +244,17 @@ def reset_pipeline_for_new_client() -> None:
     st.session_state.tool2_result       = None
     st.session_state.pipeline_stage     = 0
 
+
 def run_discovery_scan(file_name: str, directory: str) -> list:
     """
     Pass 1: Lightweight LLM scan returning section headings only.
+
+    Args:
+        file_name (str): Basename of the contract file.
+        directory (str): Directory containing the file.
+
+    Returns:
+        list[str]: Section heading strings found in the document.
     """
     full_text = load_doc_text(os.path.join(directory, file_name))
     llm = ChatGoogleGenerativeAI(
@@ -237,6 +266,7 @@ def run_discovery_scan(file_name: str, directory: str) -> list:
         "Return ONLY heading names — no clause content.\n\n" + full_text
     )
     return result.clauses
+
 
 def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
     """
@@ -268,6 +298,14 @@ def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
 def make_tools(selected_client: str, selected_clauses: list, selected_playbook: str = None) -> list:
     """
     Factory: Creates all 3 agent tools with current context baked in via closure.
+
+    Args:
+        selected_client  (str):  Basename of selected client contract.
+        selected_clauses (list): Clause headings chosen by user.
+        selected_playbook (str): Basename of selected company playbook.
+
+    Returns:
+        list: [extract_contract_terms, query_playbook, generate_risk_report]
     """
 
     @tool
@@ -436,10 +474,20 @@ with st.sidebar:
     )
     st.markdown("---")
 
-    # ── 1. 💬 LEGAL ASSISTANT (Moved to Top) ──────────────────────────────────
-    render_chatbot(GEMINI_API_KEY)
+    # ── PRE-FETCH DATA FOR CHATBOT RAG ────────────────────────────────────────
+    # We need this data BEFORE rendering the Document Selection UI so the chatbot
+    # (which sits at the top) knows what is currently selected.
+    _sidebar_playbooks = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
+    _sidebar_active_pb = st.session_state.get("playbook_select")
+    if not _sidebar_active_pb and _sidebar_playbooks:
+        _sidebar_active_pb = _sidebar_playbooks[0]
+    elif not _sidebar_playbooks:
+        _sidebar_active_pb = "No files found"
 
-    # ── 2. DOCUMENT SELECTION ─────────────────────────────────────────────────
+    # ── 1. 💬 LEGAL ASSISTANT (Moved to top) ──────────────────────────────────
+    render_chatbot(GEMINI_API_KEY, _sidebar_active_pb, _sidebar_playbooks)
+
+    # ── 2. DOCUMENT SELECTION & UPLOADS ───────────────────────────────────────
     st.markdown(
         '<p style="font-size:12px;font-weight:700;color:#374151;'
         'text-transform:uppercase;letter-spacing:0.8px;margin:4px 0 8px 0;">'
@@ -447,11 +495,24 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Fetch currently available files
-    playbook_files = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
-    client_files   = get_files_from_dir(CLIENT_CONTRACTS_DIR)
+    # Playbook Upload
+    uploaded_playbook = st.file_uploader(
+        "Upload Playbook",
+        type=["pdf", "docx"],
+        key="upload_playbook",
+        label_visibility="collapsed"
+    )
+    
+    if uploaded_playbook and uploaded_playbook.name not in st.session_state.processed_uploads:
+        success, msg = save_uploaded_file(uploaded_playbook, COMPANY_PLAYBOOK_DIR)
+        if success:
+            st.success(msg)
+            st.caption("📌 Select the file from the dropdown below and click **Rebuild Playbook DB**.")
+        else:
+            st.warning(msg)
+        st.session_state.processed_uploads.add(uploaded_playbook.name)
 
-    # Playbook Dropdown
+    playbook_files = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
     selected_playbook = st.selectbox(
         "Company Playbook:",
         options=playbook_files if playbook_files else ["No files found"],
@@ -460,35 +521,8 @@ with st.sidebar:
         key="playbook_select",
     )
     
-    # Playbook Upload
-    uploaded_playbook = st.file_uploader(
-        "Upload Playbook",
-        type=["pdf", "docx"],
-        key="upload_playbook",
-        label_visibility="collapsed"
-    )
-    if uploaded_playbook:
-        if uploaded_playbook.name not in st.session_state.processed_uploads:
-            success, msg = save_uploaded_file(uploaded_playbook, COMPANY_PLAYBOOK_DIR)
-            if success:
-                st.success(msg)
-                st.caption("📌 Select the file from the dropdown above and click **Rebuild Playbook DB**.")
-            else:
-                st.warning(msg)
-            # Add to processed uploads so it won't trigger the warning on next rerun
-            st.session_state.processed_uploads.add(uploaded_playbook.name)
+    st.markdown("<br>", unsafe_allow_html=True) # visual spacing
 
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Client Dropdown
-    selected_client = st.selectbox(
-        "Client Contract:",
-        options=client_files if client_files else ["No files found"],
-        help="Client MSA or SOW in clients/",
-        index=0,
-        key="client_select",
-    )
-    
     # Client Upload
     uploaded_client = st.file_uploader(
         "Upload Client Contract",
@@ -496,16 +530,24 @@ with st.sidebar:
         key="upload_client",
         label_visibility="collapsed"
     )
-    if uploaded_client:
-        if uploaded_client.name not in st.session_state.processed_uploads:
-            success, msg = save_uploaded_file(uploaded_client, CLIENT_CONTRACTS_DIR)
-            if success:
-                st.success(msg)
-                st.caption("📌 File uploaded. Select it from the dropdown above to analyze.")
-            else:
-                st.warning(msg)
-            # Add to processed uploads so it won't trigger the warning on next rerun
-            st.session_state.processed_uploads.add(uploaded_client.name)
+    
+    if uploaded_client and uploaded_client.name not in st.session_state.processed_uploads:
+        success, msg = save_uploaded_file(uploaded_client, CLIENT_CONTRACTS_DIR)
+        if success:
+            st.success(msg)
+            st.caption("📌 File uploaded. Select it from the dropdown below to analyze.")
+        else:
+            st.warning(msg)
+        st.session_state.processed_uploads.add(uploaded_client.name)
+
+    client_files = get_files_from_dir(CLIENT_CONTRACTS_DIR)
+    selected_client = st.selectbox(
+        "Client Contract:",
+        options=client_files if client_files else ["No files found"],
+        help="Client MSA or SOW in clients/",
+        index=0,
+        key="client_select",
+    )
 
     # Auto-reset when client changes
     if selected_client != st.session_state.last_client:
@@ -524,7 +566,6 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Compute per-playbook subfolder path for status display
     _sel_stem      = os.path.splitext(selected_playbook)[0] if selected_playbook and selected_playbook != "No files found" else ""
     _safe_sel_stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in _sel_stem)
     _sel_chroma    = os.path.join(CHROMA_PERSIST_DIR, _safe_sel_stem)
@@ -688,8 +729,6 @@ render_hitl_gate()
 
 # ==========================================
 # SECTION 14: AUTO-RUN TOOL 2 + TOOL 3
-# Fires automatically the moment the human
-# clicks APPROVE at the HITL gate.
 # ==========================================
 if st.session_state.hitl_approved and st.session_state.final_report is None:
     clause_str = ", ".join(st.session_state.selected_clauses)

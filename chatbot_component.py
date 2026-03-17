@@ -1,111 +1,104 @@
 """
 ================================================================================
-chatbot_component.py — Sidebar Chat Assistant
+chatbot_component.py — Sidebar Chat Assistant (Now with RAG!)
 ================================================================================
-Purpose : Renders a fixed, always-visible Legal Assistant chat panel inside 
-          the Streamlit sidebar. 
-
-          All state lives in st.session_state with "chatbot_" prefix to avoid
-          any collision with the main pipeline session state keys.
-
-          Gemini 2.5 Flash is called server-side via LangChain — the API key
-          never reaches the browser.
-
-Usage:
-    from chatbot_component import render_chatbot
-    # Call this INSIDE the `with st.sidebar:` block in app.py
-    render_chatbot(GEMINI_API_KEY)
+Purpose : Renders a fixed, always-visible Legal Assistant chat panel.
+          Now includes Dynamic Context and Vector DB querying!
 ================================================================================
 """
 
+import os
 import streamlit as st
-from langchain_google_genai import ChatGoogleGenerativeAI
-
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+from langchain_chroma import Chroma
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SYSTEM PROMPT
+# DYNAMIC SYSTEM PROMPT BUILDER
 # ─────────────────────────────────────────────────────────────────────────────
-_SYSTEM_PROMPT = """You are the Legal Contract Analyzer Assistant — a helpful, friendly AI assistant embedded in the Advanced Legal Contract Analyzer web application.
+def _build_system_prompt(playbook_files: list, selected_playbook: str, retrieved_context: str) -> str:
+    """Builds a dynamic system prompt injecting current file states and DB context."""
+    
+    files_str = ", ".join(playbook_files) if playbook_files else "None currently uploaded."
+    
+    prompt = f"""You are the Legal Contract Analyzer Assistant — a helpful, friendly AI assistant embedded in the Advanced Legal Contract Analyzer web application.
 
 YOUR ROLE:
-Help users understand and use the Legal Contract Analyzer. Keep answers concise and friendly — 3 to 5 sentences max unless the user asks for more detail.
+Help users understand the tool AND answer questions about their legal playbooks. Keep answers concise and friendly — 3 to 5 sentences max.
+
+CURRENT SYSTEM STATE:
+- Total Playbooks Uploaded: {len(playbook_files)}
+- Names of Uploaded Playbooks: {files_str}
+- Currently Selected Playbook: {selected_playbook if selected_playbook else 'None'}
 
 THE 5-STEP PIPELINE:
 1. DISCOVERY SCAN — lightweight scan returning section headings only
-2. TOOL 1 — extracts exact verbatim word-for-word text for selected clauses
+2. TOOL 1 — extracts exact verbatim text
 3. HITL GATE — pipeline PAUSES, human must click APPROVE or REJECT
-4. TOOL 2 — hybrid BM25 keyword (50%) + vector semantic (50%) search retrieves playbook standards
+4. TOOL 2 — hybrid BM25 + vector search retrieves playbook standards
 5. TOOL 3 — compares client text vs playbook, produces HIGH/MEDIUM/LOW risk report
 
-THREE TOOLS:
-- Tool 1 (extract_contract_terms): copies exact clause text from the client contract
-- Tool 2 (query_playbook): searches ChromaDB with EnsembleRetriever (BM25 + vector)
-- Tool 3 (generate_risk_report): produces the final risk analysis cards
+"""
+    # If we retrieved context from ChromaDB, inject it here!
+    if retrieved_context:
+        prompt += f"""
+=========================================
+RETRIEVED KNOWLEDGE FROM CURRENT PLAYBOOK
+=========================================
+The user is asking a question that requires knowledge from "{selected_playbook}". 
+Use the following exact text from the playbook to answer their question:
 
-FOUR GUARDRAILS:
-- Verbatim Enforcer: Pydantic rejects text under 120 chars with summary phrases
-- Risk Level Enforcer: only High, Medium, Low accepted
-- Zero-Inference Rule: rejects inference language in factual_conflict
-- HITL Structural Gate: Tools 2 and 3 are unreachable until hitl_approved == True
+{retrieved_context}
+=========================================
+"""
+    else:
+        prompt += "OUT-OF-SCOPE: If asked about playbook details, tell the user to select a playbook first, or state that the info isn't in the current playbook.\n"
 
-RISK LEVELS:
-- HIGH: direct contradiction — client says Net 90, standard requires Net 30
-- MEDIUM: client is silent on something the standard requires (gap)
-- LOW: fully aligned, no deviation found
-
-HOW TO USE STEP BY STEP:
-1. Select Company Playbook from sidebar dropdown
-2. Select Client Contract from sidebar dropdown
-3. Click Run Discovery Scan
-4. Select 2-4 clauses from the multiselect dropdown
-5. Click Analyze Selected Clauses — Tool 1 extracts text
-6. Review the HITL gate — check extracted clauses look correct
-7. Click APPROVE — Tools 2 and 3 run automatically
-8. Read the Final Risk Assessment Report
-
-HOW TO ADD DOCUMENTS:
-- Playbooks: drop .docx or .pdf into MyFiles/Contracts/company_standard/ or upload via UI, then click Rebuild Playbook DB
-- Client contracts: drop .docx or .pdf into MyFiles/Contracts/clients/ or upload via UI — appears in dropdown automatically
-
-TROUBLESHOOTING:
-- No DB for this playbook → select it and click Rebuild Playbook DB in sidebar
-- ChromaDB missing → run: python main.py with venv activated
-- Slow response → Gemini API call in progress, wait 10-30 seconds
-- Venv error → run env\\Scripts\\activate first
-
-TWO PLAYBOOKS — GLOBEX vs NEXORA:
-- Globex: Net 30 days, Delaware law, 30-day notice, 48-hour breach notification, 100% liability cap
-- Nexora: Net 60 days, New South Wales law, 45-day notice, 72-hour breach notification, 150% liability cap
-- Same client contract produces different risk results against different playbooks
-
-OUT-OF-SCOPE: If asked anything not about this Legal Contract Analyzer, respond:
-"I'm the Legal Contract Analyzer assistant. I can only help with questions about this tool. What would you like to know?"
-
-TONE: Friendly, concise, plain language. Use bullet points when listing steps."""
+    prompt += "TONE: Friendly, concise, plain language. Use bullet points when listing steps."
+    return prompt
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GEMINI CALL
+# GEMINI CALL WITH RAG
 # ─────────────────────────────────────────────────────────────────────────────
-def _get_bot_response(user_message: str, history: list, gemini_api_key: str) -> str:
+def _get_bot_response(user_message: str, history: list, gemini_api_key: str, selected_playbook: str, playbook_files: list) -> str:
     """
-    Calls Gemini 2.5 Flash server-side via LangChain.
-    API key stays in Python — never reaches the browser.
-
-    Args:
-        user_message   (str):  Latest user message.
-        history        (list): Previous {"role", "content"} dicts (last 8 only).
-        gemini_api_key (str):  From .env
-
-    Returns:
-        str: Bot response text.
+    Calls Gemini 2.5 Flash. First queries ChromaDB for context if a playbook is selected.
     """
+    retrieved_context = ""
+
+    # 1. Silently query ChromaDB if a playbook is active
+    if selected_playbook and selected_playbook != "No files found":
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            chroma_persist_dir = os.path.join(base_dir, "chroma_db")
+            
+            _playbook_stem = os.path.splitext(selected_playbook)[0]
+            _safe_stem     = "".join(c if c.isalnum() or c in "-_" else "_" for c in _playbook_stem)
+            _playbook_dir  = os.path.join(chroma_persist_dir, _safe_stem)
+            
+            if os.path.exists(_playbook_dir):
+                embeddings = GoogleGenerativeAIEmbeddings(
+                    model="models/gemini-embedding-001", 
+                    google_api_key=gemini_api_key
+                )
+                vector_store = Chroma(persist_directory=_playbook_dir, embedding_function=embeddings)
+                
+                # Retrieve top 3 most relevant chunks
+                docs = vector_store.similarity_search(user_message, k=3)
+                retrieved_context = "\n---\n".join([d.page_content for d in docs])
+        except Exception as e:
+            print(f"Chatbot RAG Error: {e}") # Fails gracefully if DB isn't built yet
+
+    # 2. Build the LLM prompt with the new context
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash",
         temperature=0.4,
         google_api_key=gemini_api_key,
     )
-    messages = [("system", _SYSTEM_PROMPT)]
+    
+    dynamic_prompt = _build_system_prompt(playbook_files, selected_playbook, retrieved_context)
+    messages = [("system", dynamic_prompt)]
+    
     for msg in history[-8:]:
         messages.append((msg["role"], msg["content"]))
     messages.append(("user", user_message))
@@ -119,23 +112,14 @@ def _get_bot_response(user_message: str, history: list, gemini_api_key: str) -> 
 # ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
-def render_chatbot(gemini_api_key: str) -> None:
+def render_chatbot(gemini_api_key: str, selected_playbook: str, playbook_files: list) -> None:
     """
     Renders the Legal Assistant chat panel inside the Streamlit sidebar.
-    Always visible, fixed 400px height with internal scrolling.
-
-    Args:
-        gemini_api_key (str): GEMINI_API_KEY loaded from .env in app.py
-
-    Returns:
-        None
+    Requires playbook context parameters.
     """
 
-    # ── Session state init ────────────────────────────────────────────────────
     if "chatbot_history" not in st.session_state:
         st.session_state.chatbot_history = []
-
-    # Removed the duplicate st.markdown("---") from here to fix the double-spacing issue!
 
     st.markdown(
         '<p style="font-size:12px;font-weight:700;color:#374151;'
@@ -144,7 +128,6 @@ def render_chatbot(gemini_api_key: str) -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Header banner ─────────────────────────────────────────────────────
     st.markdown(
         """
 <div style="background:linear-gradient(135deg,#1E2D5E 0%,#0D9488 100%);
@@ -154,7 +137,7 @@ def render_chatbot(gemini_api_key: str) -> None:
   <div>
     <div style="color:white;font-weight:700;font-size:13px;">Legal Assistant</div>
     <div style="color:rgba(255,255,255,0.75);font-size:10px;">
-      Gemini 2.5 Flash &nbsp;·&nbsp; Legal Analyzer questions only
+      Gemini 2.5 Flash &nbsp;·&nbsp; Ask about the app or playbook!
     </div>
   </div>
   <div style="margin-left:auto;width:8px;height:8px;background:#22c55e;
@@ -164,11 +147,9 @@ def render_chatbot(gemini_api_key: str) -> None:
         unsafe_allow_html=True,
     )
 
-    # ── Fixed 400px scrollable chat container ─────────────────────────────
     chat_container = st.container(height=400)
 
     with chat_container:
-        # ── Quick chips (only when no history yet) ────────────────────────
         if not st.session_state.chatbot_history:
             st.markdown(
                 '<p style="font-size:11px;color:#64748b;margin:0 0 6px 0;">'
@@ -177,10 +158,10 @@ def render_chatbot(gemini_api_key: str) -> None:
             )
             chips = [
                 ("📋 How to use?",    "How do I use this tool step by step?"),
-                ("🎯 HIGH risk?",     "What does HIGH risk mean in the report?"),
-                ("👤 HITL gate?",     "What is the HITL gate and why does it exist?"),
+                ("📚 Listed playbooks?", "What are the names of the playbooks currently stored?"),
+                ("⚖️ Liability Cap?", "What is the liability cap in the currently selected playbook?"),
+                ("⏳ Notice Period?", "What is the required notice period for termination in the selected playbook?"),
                 ("🛡️ Guardrails?",   "What are the four guardrails and how do they work?"),
-                ("📁 Add contract?",  "How do I add a new client contract or playbook?"),
                 ("🔍 What is RAG?",   "What is RAG and how does ChromaDB work?"),
             ]
             col1, col2 = st.columns(2)
@@ -188,67 +169,42 @@ def render_chatbot(gemini_api_key: str) -> None:
                 col = col1 if i % 2 == 0 else col2
                 with col:
                     if st.button(label, key=f"chip_{i}", use_container_width=True):
-                        st.session_state.chatbot_history.append(
-                            {"role": "user", "content": question}
-                        )
-                        with st.spinner("Thinking..."):
+                        st.session_state.chatbot_history.append({"role": "user", "content": question})
+                        with st.spinner("Searching DB & Thinking..."):
                             reply = _get_bot_response(
-                                question,
-                                st.session_state.chatbot_history[:-1],
-                                gemini_api_key,
+                                question, st.session_state.chatbot_history[:-1], gemini_api_key, selected_playbook, playbook_files
                             )
-                        st.session_state.chatbot_history.append(
-                            {"role": "assistant", "content": reply}
-                        )
+                        st.session_state.chatbot_history.append({"role": "assistant", "content": reply})
                         st.rerun()
-
             st.markdown("---")
 
-        # ── Chat history ──────────────────────────────────────────────────
         for msg in st.session_state.chatbot_history:
             avatar = "🤖" if msg["role"] == "assistant" else "👤"
             with st.chat_message(msg["role"], avatar=avatar):
                 st.markdown(msg["content"])
 
-    # ── Chat input (Outside the fixed container) ──────────────────────────
-    user_input = st.chat_input(
-        "Ask about the Legal Contract Analyzer...",
-        key="chatbot_sidebar_input",
-    )
+    user_input = st.chat_input("Ask about the Analyzer or the current Playbook...", key="chatbot_sidebar_input")
 
     if user_input:
-        # Display user message instantly inside the container
         with chat_container:
             with st.chat_message("user", avatar="👤"):
                 st.markdown(user_input)
                 
-        st.session_state.chatbot_history.append(
-            {"role": "user", "content": user_input}
-        )
+        st.session_state.chatbot_history.append({"role": "user", "content": user_input})
         
-        # Process and display assistant response inside the container
         with chat_container:
             with st.chat_message("assistant", avatar="🤖"):
-                with st.spinner("Thinking..."):
+                with st.spinner("Searching Playbook DB..."):
                     reply = _get_bot_response(
-                        user_input,
-                        st.session_state.chatbot_history[:-1],
-                        gemini_api_key,
+                        user_input, st.session_state.chatbot_history[:-1], gemini_api_key, selected_playbook, playbook_files
                     )
                 st.markdown(reply)
                 
-        st.session_state.chatbot_history.append(
-            {"role": "assistant", "content": reply}
-        )
+        st.session_state.chatbot_history.append({"role": "assistant", "content": reply})
         st.rerun()
 
-    # ── Clear button (Outside the fixed container) ────────────────────────
     if st.session_state.chatbot_history:
         st.markdown("")
-        if st.button(
-            "🗑️ Clear chat",
-            key="chatbot_clear",
-            use_container_width=True,
-        ):
+        if st.button("🗑️ Clear chat", key="chatbot_clear", use_container_width=True):
             st.session_state.chatbot_history = []
             st.rerun()
