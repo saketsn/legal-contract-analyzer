@@ -105,23 +105,21 @@ def inject_css() -> None:
 
 /* ── Risk badges ─────────────────────────────────────────── */
 .risk-badge-high   { background:#ef4444; color:white; padding:3px 10px;
-                     border-radius:12px; font-size:11px; font-weight:700; }
+                     border-radius:12px; font-size:12px; font-weight:700; }
 .risk-badge-medium { background:#f59e0b; color:white; padding:3px 10px;
-                     border-radius:12px; font-size:11px; font-weight:700; }
+                     border-radius:12px; font-size:12px; font-weight:700; }
 .risk-badge-low    { background:#22c55e; color:white; padding:3px 10px;
-                     border-radius:12px; font-size:11px; font-weight:700; }
+                     border-radius:12px; font-size:12px; font-weight:700; }
 
 /* ── Verbatim text box ───────────────────────────────────── */
-/* white-space:pre-wrap wraps long lines — no horizontal scroll.
-   The * rule resets ALL child elements so Word heading styles
-   (h1/h2/h3) cannot make text render at browser heading sizes. */
+/* INCREASED FONT SIZES HERE */
 .verbatim-box {
     background: #f8fafc;
     border: 1px solid #e2e8f0;
     border-radius: 6px;
     padding: 12px 14px;
     margin: 6px 0 12px 0;
-    font-size: 12px !important;
+    font-size: 14px !important;
     line-height: 1.7;
     color: #374151;
     font-family: "Courier New", Courier, monospace;
@@ -132,7 +130,7 @@ def inject_css() -> None:
 }
 /* Kill Word heading styles — prevents h1/h2/h3 from rendering large */
 .verbatim-box * {
-    font-size: 12px !important;
+    font-size: 14px !important;
     font-weight: normal !important;
     font-family: "Courier New", Courier, monospace !important;
     line-height: 1.7 !important;
@@ -145,12 +143,12 @@ def inject_css() -> None:
 .conflict-box {
     background: #fff5f5; border: 1px solid #fecaca;
     border-radius: 6px; padding: 10px 14px;
-    margin: 6px 0; font-size: 13px; color: #b91c1c;
+    margin: 6px 0; font-size: 15px; color: #b91c1c;
 }
 
 /* ── Section label ───────────────────────────────────────── */
 .section-label {
-    font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    font-size: 13px; font-weight: 700; letter-spacing: 1px;
     text-transform: uppercase; color: #64748b; margin: 10px 0 4px 0;
 }
 
@@ -170,27 +168,18 @@ def inject_css() -> None:
 }
 
 /* ── Selectbox — disable free-text typing ────────────────── */
-/* Streamlit renders selectboxes as searchable <input> fields */
-/* by default — users can type into them.                     */
-/* These rules disable the cursor and pointer events on the   */
-/* input element so only clicking the dropdown arrow works.   */
-
-/* Target the text input inside every sidebar selectbox       */
 [data-testid="stSidebar"] [data-baseweb="select"] input {
-    caret-color: transparent !important;  /* hide text cursor */
-    pointer-events: none !important;      /* block mouse clicks on input */
+    caret-color: transparent !important;  
+    pointer-events: none !important;      
     cursor: default !important;
 }
-/* Target the inner input container                           */
 [data-testid="stSidebar"] [data-baseweb="select"] [data-baseweb="input"] {
     pointer-events: none !important;
 }
-/* Keep the outer container clickable to open the dropdown    */
 [data-testid="stSidebar"] [data-baseweb="select"] [data-baseweb="select"] {
     cursor: pointer !important;
     pointer-events: all !important;
 }
-/* Hide the clear/search icon that appears on hover           */
 [data-testid="stSidebar"] [data-baseweb="select"] [data-baseweb="icon"] {
     pointer-events: none !important;
 }
@@ -387,9 +376,9 @@ def render_risk_legend() -> None:
   <div style="flex:1;min-width:200px;background:#fff5f5;
               border:1px solid #fecaca;border-left:4px solid #ef4444;
               border-radius:8px;padding:12px 16px;">
-    <div style="font-size:13px;font-weight:700;color:#b91c1c;margin-bottom:4px;">
+    <div style="font-size:15px;font-weight:700;color:#b91c1c;margin-bottom:4px;">
       🔴 HIGH — Direct Contradiction</div>
-    <div style="font-size:12px;color:#7f1d1d;">
+    <div style="font-size:14px;color:#7f1d1d;">
       Client text DIRECTLY contradicts the standard.
       Example: Client says "Net 90 days" — standard requires "Net 30 days."</div>
   </div>
@@ -397,9 +386,9 @@ def render_risk_legend() -> None:
   <div style="flex:1;min-width:200px;background:#fffbeb;
               border:1px solid #fde68a;border-left:4px solid #f59e0b;
               border-radius:8px;padding:12px 16px;">
-    <div style="font-size:13px;font-weight:700;color:#92400e;margin-bottom:4px;">
+    <div style="font-size:15px;font-weight:700;color:#92400e;margin-bottom:4px;">
       🟠 MEDIUM — Gap / Client Silent</div>
-    <div style="font-size:12px;color:#78350f;">
+    <div style="font-size:14px;color:#78350f;">
       Client does NOT address something the standard requires.
       No direct contradiction — the rule is simply absent.</div>
   </div>
@@ -407,9 +396,9 @@ def render_risk_legend() -> None:
   <div style="flex:1;min-width:200px;background:#f0fdf4;
               border:1px solid #bbf7d0;border-left:4px solid #22c55e;
               border-radius:8px;padding:12px 16px;">
-    <div style="font-size:13px;font-weight:700;color:#15803d;margin-bottom:4px;">
+    <div style="font-size:15px;font-weight:700;color:#15803d;margin-bottom:4px;">
       🟢 LOW — Fully Aligned</div>
-    <div style="font-size:12px;color:#14532d;">
+    <div style="font-size:14px;color:#14532d;">
       Client text is fully consistent with the standard.
       No deviation, contradiction, or gap found.</div>
   </div>
@@ -461,7 +450,7 @@ def render_risk_card(analysis) -> None:
     col_name, col_meta = st.columns([5, 2])
     with col_name:
         st.markdown(
-            f'<p style="font-size:16px;font-weight:700;margin:0;color:#1e293b;">'
+            f'<p style="font-size:18px;font-weight:700;margin:0;color:#1e293b;">'
             f'{icon} {html.escape(analysis.clause_name)}</p>',
             unsafe_allow_html=True,
         )
@@ -469,7 +458,7 @@ def render_risk_card(analysis) -> None:
         st.markdown(
             f'<div style="padding-top:2px;">'
             f'<span class="{badge_css}">{analysis.risk_level.upper()}</span>'
-            f'&nbsp;&nbsp;<span style="font-size:11px;color:{status_color};font-weight:600;">'
+            f'&nbsp;&nbsp;<span style="font-size:13px;color:{status_color};font-weight:600;">'
             f'{status_label}</span></div>',
             unsafe_allow_html=True,
         )
@@ -515,7 +504,7 @@ def render_risk_card(analysis) -> None:
     # ── Row 5: Guardrail confirmation ─────────────────────────────────────────
     st.markdown(
         '<div style="margin-top:10px;padding:8px 12px;background:#f0fdf4;'
-        'border:1px solid #bbf7d0;border-radius:6px;font-size:12px;color:#15803d;">'
+        'border:1px solid #bbf7d0;border-radius:6px;font-size:14px;color:#15803d;">'
         "🛡️ <strong>Guardrail Confirmed:</strong> "
         f"{html.escape(analysis.guardrail_note)}"
         "</div>",

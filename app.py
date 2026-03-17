@@ -21,6 +21,8 @@ Run:
 import json
 import os
 import glob
+import html
+from io import BytesIO
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -33,6 +35,12 @@ from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.tools import tool
+
+# PDF Generation Imports
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.pagesizes import LETTER
+from reportlab.lib import colors
 
 from main import initialize_playbook_db
 from chatbot_component import render_chatbot
@@ -181,12 +189,6 @@ class FinalRiskReport(BaseModel):
 def get_files_from_dir(directory: str) -> list:
     """
     Returns sorted basenames of all .pdf and .docx files in a directory.
-
-    Args:
-        directory (str): Absolute path to folder.
-
-    Returns:
-        list[str]: Sorted filenames. Empty list if directory missing.
     """
     if not os.path.exists(directory):
         return []
@@ -196,16 +198,9 @@ def get_files_from_dir(directory: str) -> list:
         + glob.glob(os.path.join(directory, "*.docx"))
     ])
 
-
 def load_doc_text(file_path: str) -> str:
     """
     Loads a PDF or .docx document and returns its full text.
-
-    Args:
-        file_path (str): Absolute path to document.
-
-    Returns:
-        str: Full text with pages joined by newlines.
     """
     loader = (
         PyPDFLoader(file_path)
@@ -214,20 +209,13 @@ def load_doc_text(file_path: str) -> str:
     )
     return "\n".join([p.page_content for p in loader.load()])
 
-
 def log_step(role: str, content: str, status: str = "thought") -> None:
     """
     Appends one step to the ReAct trace log.
-
-    Args:
-        role    (str): Label (e.g. 'Thought', 'Action').
-        content (str): Text body of this step.
-        status  (str): thought | action | observation | human | final
     """
     st.session_state.agent_log.append({
         "role": role, "content": content, "status": status,
     })
-
 
 def reset_pipeline_for_new_client() -> None:
     """
@@ -244,17 +232,9 @@ def reset_pipeline_for_new_client() -> None:
     st.session_state.tool2_result       = None
     st.session_state.pipeline_stage     = 0
 
-
 def run_discovery_scan(file_name: str, directory: str) -> list:
     """
     Pass 1: Lightweight LLM scan returning section headings only.
-
-    Args:
-        file_name (str): Basename of the contract file.
-        directory (str): Directory containing the file.
-
-    Returns:
-        list[str]: Section heading strings found in the document.
     """
     full_text = load_doc_text(os.path.join(directory, file_name))
     llm = ChatGoogleGenerativeAI(
@@ -267,13 +247,9 @@ def run_discovery_scan(file_name: str, directory: str) -> list:
     )
     return result.clauses
 
-
 def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
     """
     Saves uploaded file if it doesn't exist.
-    
-    Returns:
-        (success: bool, message: str)
     """
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
@@ -290,22 +266,76 @@ def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
     except Exception as e:
         return (False, f"❌ Upload failed: {str(e)}")
 
+# ==========================================
+# SECTION 6: PDF GENERATOR FUNCTION
+# ==========================================
+def generate_pdf_report(report_data: FinalRiskReport, client_name: str) -> BytesIO:
+    """
+    Generates a structured PDF from the FinalRiskReport object using reportlab.
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+
+    title_style = styles['Title']
+    heading_style = styles['Heading2']
+    normal_style = styles['Normal']
+    
+    # Custom styles
+    risk_style = ParagraphStyle('RiskStyle', parent=normal_style, fontName='Helvetica-Bold', fontSize=11)
+    verbatim_style = ParagraphStyle('VerbatimStyle', parent=normal_style, fontName='Courier', fontSize=9, leading=12, leftIndent=10, rightIndent=10)
+
+    elements = []
+    
+    # Report Header
+    elements.append(Paragraph("Legal Risk Assessment Report", title_style))
+    elements.append(Spacer(1, 10))
+    elements.append(Paragraph(f"<b>Analyzed Document:</b> {html.escape(client_name)}", normal_style))
+    elements.append(Spacer(1, 20))
+    elements.append(HRFlowable(width="100%", thickness=2, color=colors.darkblue))
+    elements.append(Spacer(1, 20))
+
+    # Iterate through risk analyses
+    for analysis in report_data.analyses:
+        elements.append(Paragraph(f"Clause: {html.escape(analysis.clause_name)}", heading_style))
+        
+        # Color code the risk level
+        risk_color = "red" if analysis.risk_level.lower() == "high" else "orange" if analysis.risk_level.lower() == "medium" else "green"
+        elements.append(Paragraph(f"<font color='{risk_color}'>RISK LEVEL: {analysis.risk_level.upper()}</font>", risk_style))
+        elements.append(Spacer(1, 8))
+
+        # Factual Conflict
+        elements.append(Paragraph("<b>Factual Conflict:</b>", normal_style))
+        elements.append(Paragraph(html.escape(analysis.factual_conflict), normal_style))
+        elements.append(Spacer(1, 8))
+
+        # Client Verbatim
+        elements.append(Paragraph("<b>Client Verbatim:</b>", normal_style))
+        elements.append(Paragraph(html.escape(analysis.client_verbatim).replace('\n', '<br/>'), verbatim_style))
+        elements.append(Spacer(1, 8))
+
+        # Standard Verbatim
+        elements.append(Paragraph("<b>Company Standard Verbatim:</b>", normal_style))
+        elements.append(Paragraph(html.escape(analysis.standard_verbatim).replace('\n', '<br/>'), verbatim_style))
+        elements.append(Spacer(1, 20))
+        
+        # Separator between clauses
+        elements.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
+        elements.append(Spacer(1, 20))
+
+    # Build the PDF
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
 
 # ==========================================
-# SECTION 6: AGENT TOOLS (FACTORY PATTERN)
+# SECTION 7: AGENT TOOLS (FACTORY PATTERN)
 # ==========================================
 
 def make_tools(selected_client: str, selected_clauses: list, selected_playbook: str = None) -> list:
     """
     Factory: Creates all 3 agent tools with current context baked in via closure.
-
-    Args:
-        selected_client  (str):  Basename of selected client contract.
-        selected_clauses (list): Clause headings chosen by user.
-        selected_playbook (str): Basename of selected company playbook.
-
-    Returns:
-        list: [extract_contract_terms, query_playbook, generate_risk_report]
     """
 
     @tool
@@ -464,7 +494,7 @@ DATA:
 
 
 # ==========================================
-# SECTION 7: SIDEBAR
+# SECTION 8: SIDEBAR
 # ==========================================
 with st.sidebar:
     st.markdown(
@@ -486,6 +516,10 @@ with st.sidebar:
 
     # ── 1. 💬 LEGAL ASSISTANT (Moved to top) ──────────────────────────────────
     render_chatbot(GEMINI_API_KEY, _sidebar_active_pb, _sidebar_playbooks)
+
+    # Adding vertical breathing room between Chatbot and Document Selection
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.markdown("---")
 
     # ── 2. DOCUMENT SELECTION & UPLOADS ───────────────────────────────────────
     st.markdown(
@@ -632,7 +666,7 @@ if not client_files or not playbook_files:
 
 
 # ==========================================
-# SECTION 8: PAGE HEADER
+# SECTION 9: PAGE HEADER
 # ==========================================
 st.markdown(
     '<h1 style="font-size:32px;font-weight:800;color:#1E2D5E;margin-bottom:4px;">'
@@ -645,17 +679,17 @@ st.markdown(
 )
 
 # ==========================================
-# SECTION 9: PIPELINE BAR
+# SECTION 10: PIPELINE BAR
 # ==========================================
 render_pipeline_bar()
 
 # ==========================================
-# SECTION 10: REACT TRACE PANEL
+# SECTION 11: REACT TRACE PANEL
 # ==========================================
 render_trace_panel()
 
 # ==========================================
-# SECTION 11: STEP 1 — DOCUMENT DISCOVERY
+# SECTION 12: STEP 1 — DOCUMENT DISCOVERY
 # ==========================================
 st.markdown("---")
 st.markdown("## Step 1 — Document Discovery")
@@ -685,7 +719,7 @@ with col_info:
         st.info("Click **Run Discovery Scan** to begin.")
 
 # ==========================================
-# SECTION 12: STEP 2 — CLAUSE SELECTION
+# SECTION 13: STEP 2 — CLAUSE SELECTION
 # ==========================================
 if st.session_state.discovered_clauses:
     selected_clauses = st.multiselect(
@@ -723,12 +757,12 @@ if st.session_state.discovered_clauses:
         st.rerun()
 
 # ==========================================
-# SECTION 13: HITL GATE
+# SECTION 14: HITL GATE
 # ==========================================
 render_hitl_gate()
 
 # ==========================================
-# SECTION 14: AUTO-RUN TOOL 2 + TOOL 3
+# SECTION 15: AUTO-RUN TOOL 2 + TOOL 3
 # ==========================================
 if st.session_state.hitl_approved and st.session_state.final_report is None:
     clause_str = ", ".join(st.session_state.selected_clauses)
@@ -743,6 +777,24 @@ if st.session_state.hitl_approved and st.session_state.final_report is None:
     st.rerun()
 
 # ==========================================
-# SECTION 15: FINAL REPORT
+# SECTION 16: FINAL REPORT & PDF EXPORT
 # ==========================================
 render_full_report()
+
+if st.session_state.final_report:
+    st.markdown("---")
+    st.markdown("### Export Report")
+    
+    # Generate the PDF in memory
+    pdf_buffer = generate_pdf_report(st.session_state.final_report, selected_client)
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.download_button(
+            label="⬇ Download Risk Report as PDF",
+            data=pdf_buffer,
+            file_name=f"Risk_Report_{selected_client.replace('.docx', '').replace('.pdf', '')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            type="primary"
+        )
