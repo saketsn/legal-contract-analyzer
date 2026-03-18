@@ -496,8 +496,6 @@ with st.sidebar:
     st.markdown("---")
 
     # ── PRE-FETCH DATA FOR CHATBOT RAG ────────────────────────────────────────
-    # We need this data BEFORE rendering the Document Selection UI so the chatbot
-    # (which sits at the top) knows what is currently selected.
     _sidebar_playbooks = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
     _sidebar_active_pb = st.session_state.get("playbook_select")
     if not _sidebar_active_pb and _sidebar_playbooks:
@@ -770,22 +768,30 @@ if st.session_state.hitl_approved and st.session_state.final_report is None:
 # ==========================================
 # SECTION 16: FINAL REPORT & PDF EXPORT
 # ==========================================
-render_full_report()
-
 if st.session_state.final_report:
     st.markdown("---")
-    st.markdown("### Export Report")
     
-    # Generate the PDF in memory
-    pdf_buffer = generate_pdf_report(st.session_state.final_report, selected_client)
+    # Create columns to put Header and Download Button side-by-side
+    col_header, col_btn = st.columns([3, 1])
     
-    col1, col2 = st.columns([1, 2])
-    with col1:
+    with col_header:
+        st.markdown("## 📊 Final Risk Assessment Report")
+        
+    with col_btn:
+        # Generate the PDF in memory
+        pdf_buffer = generate_pdf_report(st.session_state.final_report, selected_client)
+        
+        # Add a tiny bit of top margin so the button visually aligns with the text header
+        st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
+        
         st.download_button(
-            label="⬇ Download Risk Report as PDF",
+            label="⬇ Download PDF Report",
             data=pdf_buffer,
             file_name=f"Risk_Report_{selected_client.replace('.docx', '').replace('.pdf', '')}.pdf",
             mime="application/pdf",
             use_container_width=True,
             type="primary"
         )
+        
+# Now render the rest of the report (metrics, legend, and risk cards) right below it
+render_full_report()

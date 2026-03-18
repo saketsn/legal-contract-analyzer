@@ -534,9 +534,6 @@ def render_full_report() -> None:
     if not st.session_state.final_report:
         return
 
-    st.markdown("---")
-    st.markdown("## 📊 Final Risk Assessment Report")
-
     st.markdown(
         '<div style="color:#475569;font-size:13px;margin-bottom:20px;'
         'background:#f1f5f9;border-radius:6px;padding:10px 14px;">'
