@@ -8,7 +8,7 @@ UI           : Imported from ui_components.py (purely presentational)
 
 Flow:
     1. Run Discovery Scan
-    2. Select clauses -> click "Analyze Selected Clauses"
+    2. Select clauses -> click "Analyze Selected Sections"
        -> Tool 1 runs -> HITL gate appears
     3. APPROVE -> Tool 2 + Tool 3 run automatically -> Report shown
        REJECT  -> Error message, user re-selects and re-analyzes
@@ -297,7 +297,7 @@ def generate_pdf_report(report_data: FinalRiskReport, client_name: str) -> Bytes
 
     # Iterate through risk analyses
     for analysis in report_data.analyses:
-        elements.append(Paragraph(f"Clause: {html.escape(analysis.clause_name)}", heading_style))
+        elements.append(Paragraph(f"Section: {html.escape(analysis.clause_name)}", heading_style))
         
         # Color code the risk level
         risk_color = "red" if analysis.risk_level.lower() == "high" else "orange" if analysis.risk_level.lower() == "medium" else "green"
@@ -319,7 +319,7 @@ def generate_pdf_report(report_data: FinalRiskReport, client_name: str) -> Bytes
         elements.append(Paragraph(html.escape(analysis.standard_verbatim).replace('\n', '<br/>'), verbatim_style))
         elements.append(Spacer(1, 20))
         
-        # Separator between clauses
+        # Separator between sections
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
         elements.append(Spacer(1, 20))
 
@@ -342,12 +342,9 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
     def extract_contract_terms(clause_list: str) -> str:
         """
         TOOL 1 — VERBATIM CLAUSE EXTRACTOR.
-        Extracts exact word-for-word text for each specified clause.
-        Input : Comma-separated clause heading names.
-        Output: JSON preview. Full text stored in session_state.extracted_data.
-        Guardrail: Pydantic guardrail_no_summary rejects any summary-style text.
+        Extracts exact word-for-word text for each specified section.
         """
-        log_step(" Thought", "Must call Tool 1 first to extract verbatim clause text.", "thought")
+        log_step(" Thought", "Must call Tool 1 first to extract verbatim section text.", "thought")
         log_step(" Action",  f"extract_contract_terms({clause_list})", "action")
 
         full_text = load_doc_text(os.path.join(CLIENT_CONTRACTS_DIR, selected_client))
@@ -358,8 +355,8 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
             "MANDATORY EXTRACTION GUARDRAILS\n"
             "--------------------------------\n"
             "RULE 1 -- VERBATIM ONLY: Copy CHARACTER BY CHARACTER. No summarizing.\n"
-            "RULE 2 -- COMPLETE: Include ALL numbered sub-clauses.\n"
-            "RULE 3 -- ABSENT: If clause absent, set verbatim_text to: Clause Not Present\n"
+            "RULE 2 -- COMPLETE: Include ALL numbered sub-sections.\n"
+            "RULE 3 -- ABSENT: If section absent, set verbatim_text to: Section Not Present\n"
             "--------------------------------\n\n"
             f"Extract VERBATIM text for: {clause_list}\n\nDOCUMENT TEXT:\n{full_text}"
         )
@@ -368,7 +365,7 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
         st.session_state.pipeline_stage = 2
 
         preview = json.dumps([
-            {"clause": c.clause_name,
+            {"section": c.clause_name,
              "preview": (c.verbatim_text[:250] + "...") if len(c.verbatim_text) > 250
                         else c.verbatim_text}
             for c in result.extracted_clauses
@@ -381,8 +378,6 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
         """
         TOOL 2 — HYBRID PLAYBOOK RETRIEVER.
         Queries ChromaDB using 50% BM25 keyword + 50% vector semantic search.
-        Input : Comma-separated clause topic names.
-        Output: Most relevant playbook standard text for each topic.
         """
         log_step(" Thought", "Tool 1 approved. Querying playbook RAG with Tool 2.", "thought")
         log_step(" Action",  f"query_playbook({clause_topics})", "action")
@@ -428,10 +423,6 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
         """
         TOOL 3 — RISK REPORT GENERATOR.
         Compares client verbatim text against playbook standards.
-        Guardrail — ZERO INFERENCE: Literal contradictions only.
-        Guardrail — VERBATIM QUOTATION: Must quote both documents exactly.
-        Input : Playbook standard text from Tool 2.
-        Output: Structured risk summary. Full report in session_state.final_report.
         """
         log_step(" Thought", "Playbook retrieved. Generating risk report with Tool 3.", "thought")
         log_step(" Action",  "generate_risk_report(...)", "action")
@@ -442,7 +433,7 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
         context = ""
         for clause in st.session_state.extracted_data.extracted_clauses:
             context += (
-                f"\nCLAUSE NAME: {clause.clause_name}\n"
+                f"\nSECTION NAME: {clause.clause_name}\n"
                 f"CLIENT VERBATIM TEXT:\n{clause.verbatim_text}\n"
                 f"COMPANY STANDARD:\n{comparison_context}\n"
                 f"{'=' * 60}\n"
@@ -461,7 +452,7 @@ GUARDRAIL 1 -- ZERO INFERENCE RULE
   ONLY report LITERALLY AND EXPLICITLY written text.
 
 GUARDRAIL 2 -- MANDATORY VERBATIM QUOTATION
-  client_verbatim   : EXACT client clause text, word for word.
+  client_verbatim   : EXACT client section text, word for word.
   standard_verbatim : EXACT playbook standard text, word for word.
   factual_conflict  : ONE sentence, literal difference only.
     Example: Client states 90 days; company standard requires 30 days.
@@ -483,11 +474,11 @@ DATA:
         st.session_state.pipeline_stage = 4
 
         summary = json.dumps([
-            {"clause": a.clause_name, "risk": a.risk_level, "conflict": a.conflict_found}
+            {"section": a.clause_name, "risk": a.risk_level, "conflict": a.conflict_found}
             for a in result.analyses
         ], indent=2)
         log_step(" Observation", summary, "observation")
-        log_step(" Final Answer", f"Report complete. {len(result.analyses)} clauses analyzed.", "final")
+        log_step(" Final Answer", f"Report complete. {len(result.analyses)} sections analyzed.", "final")
         return f"Report generated.\n{summary}"
 
     return [extract_contract_terms, query_playbook, generate_risk_report]
@@ -695,7 +686,7 @@ st.markdown("---")
 st.markdown("## Step 1 — Document Discovery")
 st.markdown(
     "Scan the client contract to discover its legal section headings. "
-    "This is a lightweight call — it does **not** extract clause content."
+    "This is a lightweight call — it does **not** extract section content."
 )
 
 col_btn, col_info = st.columns([2, 3])
@@ -713,7 +704,7 @@ with col_info:
     if st.session_state.discovered_clauses:
         st.success(
             f" Discovered **{len(st.session_state.discovered_clauses)}** "
-            f"clauses in `{selected_client}`"
+            f"sections in `{selected_client}`"
         )
     else:
         st.info("Click **Run Discovery Scan** to begin.")
@@ -723,7 +714,7 @@ with col_info:
 # ==========================================
 if st.session_state.discovered_clauses:
     selected_clauses = st.multiselect(
-        "Select clauses to analyze:",
+        "Select sections to analyze:",
         options=st.session_state.discovered_clauses,
         default=st.session_state.discovered_clauses[:3],
         help="Choose sections to extract and compare against the playbook.",
@@ -731,24 +722,24 @@ if st.session_state.discovered_clauses:
     st.session_state.selected_clauses = selected_clauses
 
     st.markdown("---")
-    st.markdown("## Step 2 — Analyze Clauses")
+    st.markdown("## Step 2 — Analyze Sections")
     st.markdown(
-        "Select clauses above then click **Analyze**. "
+        "Select sections above then click **Analyze Selected Sections**. "
         "The agent extracts verbatim text (Tool 1), pauses for your review, "
         "then automatically runs the playbook query (Tool 2) and generates "
         "the full risk report (Tool 3) the moment you approve."
     )
 
     if st.session_state.rejected_flag:
-        st.error("❌ Extraction was rejected. Adjust clause selection and click Analyze again.")
+        st.error("❌ Extraction was rejected. Adjust section selection and click Analyze again.")
 
     if st.button(
-        " Analyze Selected Clauses",
+        " Analyze Selected Sections",
         type="primary",
         disabled=not selected_clauses,
         use_container_width=False,
     ):
-        with st.spinner("Tool 1: Extracting verbatim clause text..."):
+        with st.spinner("Tool 1: Extracting verbatim section text..."):
             tools      = make_tools(selected_client, selected_clauses, selected_playbook)
             clause_str = ", ".join(selected_clauses)
             tools[0].invoke({"clause_list": clause_str})
