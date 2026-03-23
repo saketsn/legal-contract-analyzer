@@ -1,0 +1,54 @@
+[
+  {
+    "timestamp": "2026-03-23T14:34:06",
+    "tool_name": "Discovery Scan",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 6647,
+    "output_tokens": 182,
+    "total_tokens": 6829,
+    "cost_usd": 0.000553,
+    "duration_ms": 3547,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": ""
+  },
+  {
+    "timestamp": "2026-03-23T14:34:19",
+    "tool_name": "Tool 1 — Extract",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 6662,
+    "output_tokens": 904,
+    "total_tokens": 7566,
+    "cost_usd": 0.000771,
+    "duration_ms": 6341,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": ""
+  },
+  {
+    "timestamp": "2026-03-23T14:34:27",
+    "tool_name": "Tool 2 — Playbook",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 15,
+    "output_tokens": 3625,
+    "total_tokens": 3640,
+    "cost_usd": 0.001089,
+    "duration_ms": 0,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": ""
+  },
+  {
+    "timestamp": "2026-03-23T14:34:51",
+    "tool_name": "Tool 3 — Report",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 11885,
+    "output_tokens": 1987,
+    "total_tokens": 13872,
+    "cost_usd": 0.001487,
+    "duration_ms": 23824,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": ""
+  }
+]

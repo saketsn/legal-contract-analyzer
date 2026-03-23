@@ -1,0 +1,39 @@
+[
+  {
+    "run_id": "20260323143451",
+    "timestamp": "2026-03-23T14:34:51",
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "",
+    "clauses_selected": [
+      "RECITALS",
+      "SECTION 1: DEFINITIONS",
+      "SECTION 2: SCOPE OF SERVICES"
+    ],
+    "clause_count": 3,
+    "high_count": 0,
+    "medium_count": 3,
+    "low_count": 0,
+    "total_tokens": 31907,
+    "clause_detail": [
+      {
+        "clause_name": "RECITALS",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract's Recitals section describes the parties and purpose of the agreement, while the company standard for Recitals outlines vendor due diligence requirements and risk classification."
+      },
+      {
+        "clause_name": "SECTION 1: DEFINITIONS",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract's \"SECTION 1: DEFINITIONS\" lists defined terms, while the company standard for \"SECTION 1: DEFINITIONS\" describes \"SECTION 1: CORE VENDOR CONTRACT STANDARDS\" and its purpose."
+      },
+      {
+        "clause_name": "SECTION 2: SCOPE OF SERVICES",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract's \"SECTION 2: SCOPE OF SERVICES\" details how services will be provided and managed, while the company standard for \"SECTION 2: SCOPE OF SERVICES\" describes \"SECTION 2: VENDOR ONBOARDING PROCEDURES\" and includes a clause about breach notification windows."
+      }
+    ]
+  }
+]

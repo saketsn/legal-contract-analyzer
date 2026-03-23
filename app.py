@@ -22,6 +22,7 @@ import json
 import os
 import glob
 import html
+import time
 from io import BytesIO
 
 import streamlit as st
@@ -36,7 +37,6 @@ from langchain_community.retrievers import BM25Retriever
 from langchain.retrievers import EnsembleRetriever
 from langchain.tools import tool
 
-# PDF Generation Imports
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, HRFlowable
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.pagesizes import LETTER
@@ -51,6 +51,7 @@ from ui_components import (
     render_hitl_gate,
     render_full_report,
 )
+import logger
 
 # ==========================================
 # SECTION 1: ENVIRONMENT & PATHS
@@ -66,16 +67,22 @@ CHROMA_PERSIST_DIR   = os.path.join(BASE_DIR, "chroma_db")
 
 # ==========================================
 # SECTION 2: PAGE CONFIG
-# Must be the first Streamlit call.
 # ==========================================
 st.set_page_config(
     page_title="Legal Contract Analyzer",
     page_icon="📋",
     layout="wide",
     initial_sidebar_state="expanded",
+    menu_items={}
 )
 
 inject_css()
+
+st.markdown("""
+    <style>
+    [data-testid="stSidebarNav"] { display: none !important; }
+    </style>
+""", unsafe_allow_html=True)
 
 if not GEMINI_API_KEY:
     st.error(" CRITICAL: GEMINI_API_KEY not found in .env file. Add it and restart.")
@@ -85,18 +92,21 @@ if not GEMINI_API_KEY:
 # SECTION 3: SESSION STATE
 # ==========================================
 SESSION_DEFAULTS = {
-    "discovered_clauses": [],
-    "extracted_data":     None,
-    "hitl_approved":      False,
-    "rejected_flag":      False,
-    "final_report":       None,
-    "agent_log":          [],
-    "selected_client":    None,
-    "selected_clauses":   [],
-    "tool2_result":       None,
-    "pipeline_stage":     0,
-    "last_client":        None,
-    "processed_uploads":  set(), # Fixes the duplicate upload warning bug
+    "discovered_clauses":  [],
+    "extracted_data":      None,
+    "hitl_approved":       False,
+    "rejected_flag":       False,
+    "final_report":        None,
+    "agent_log":           [],
+    "selected_client":     None,
+    "selected_clauses":    [],
+    "tool2_result":        None,
+    "pipeline_stage":      0,
+    "last_client":         None,
+    "last_department":     None,
+    "processed_uploads":   set(),
+    "selected_department": "",
+    "run_token_total":     0,
 }
 for key, value in SESSION_DEFAULTS.items():
     if key not in st.session_state:
@@ -107,25 +117,18 @@ for key, value in SESSION_DEFAULTS.items():
 # ==========================================
 
 class ClauseList(BaseModel):
-    """Pass 1 schema — discovery returns heading names only."""
     clauses: List[str] = Field(
         description="All main legal section headings in the document."
     )
 
 
 class ExtractedClause(BaseModel):
-    """
-    Single clause extracted by Tool 1.
-    GUARDRAIL 1 — VERBATIM ENFORCER:
-    Rejects summary-style text at the data layer.
-    """
     clause_name:   str = Field(description="Exact heading name from the document.")
     verbatim_text: str = Field(description="EXACT word-for-word text. No summarization.")
 
     @field_validator("verbatim_text")
     @classmethod
     def guardrail_no_summary(cls, v: str) -> str:
-        """Rejects verbatim_text that looks like a summary."""
         if v.strip() == "Clause Not Present":
             return v
         triggers = [
@@ -139,16 +142,10 @@ class ExtractedClause(BaseModel):
 
 
 class ContractData(BaseModel):
-    """Full Tool 1 output — list of ExtractedClause objects."""
     extracted_clauses: List[ExtractedClause]
 
 
 class RiskAnalysis(BaseModel):
-    """
-    Single clause risk analysis from Tool 3.
-    GUARDRAIL 2 — RISK LEVEL ENFORCER: High / Medium / Low only.
-    GUARDRAIL 3 — ZERO INFERENCE: Rejects inference language.
-    """
     clause_name:       str  = Field(description="Name of the analyzed clause.")
     risk_level:        str  = Field(description="Exactly: High, Medium, or Low")
     conflict_found:    bool = Field(description="True=direct contradiction. False=gap or aligned.")
@@ -160,7 +157,6 @@ class RiskAnalysis(BaseModel):
     @field_validator("risk_level")
     @classmethod
     def guardrail_risk_level(cls, v: str) -> str:
-        """Enforces risk level vocabulary."""
         if v.strip().lower() not in {"high", "medium", "low"}:
             raise ValueError(f"GUARDRAIL: risk_level must be High/Medium/Low. Got: '{v}'")
         return v.strip().capitalize()
@@ -168,7 +164,6 @@ class RiskAnalysis(BaseModel):
     @field_validator("factual_conflict")
     @classmethod
     def guardrail_zero_inference(cls, v: str) -> str:
-        """Rejects inference language in factual_conflict."""
         banned = ["may imply", "could suggest", "appears to", "seems to",
                   "likely means", "probably", "it is possible", "might indicate"]
         found = [p for p in banned if p in v.lower()]
@@ -178,7 +173,6 @@ class RiskAnalysis(BaseModel):
 
 
 class FinalRiskReport(BaseModel):
-    """Full Tool 3 output — list of RiskAnalysis objects."""
     analyses: List[RiskAnalysis]
 
 
@@ -186,10 +180,48 @@ class FinalRiskReport(BaseModel):
 # SECTION 5: UTILITY FUNCTIONS
 # ==========================================
 
+def get_departments() -> list:
+    """Returns sorted list of department subfolder names inside clients/."""
+    if not os.path.exists(CLIENT_CONTRACTS_DIR):
+        return []
+    return sorted([
+        d for d in os.listdir(CLIENT_CONTRACTS_DIR)
+        if os.path.isdir(os.path.join(CLIENT_CONTRACTS_DIR, d))
+    ])
+
+
+def get_all_client_filenames() -> set:
+    """
+    Returns set of ALL client contract filenames across ALL departments
+    and the flat clients/ root. Used for global uniqueness enforcement.
+    """
+    names = set()
+    for ext in ["*.pdf", "*.docx"]:
+        for f in glob.glob(os.path.join(CLIENT_CONTRACTS_DIR, ext)):
+            names.add(os.path.basename(f))
+    for dept in get_departments():
+        dept_dir = os.path.join(CLIENT_CONTRACTS_DIR, dept)
+        for ext in ["*.pdf", "*.docx"]:
+            for f in glob.glob(os.path.join(dept_dir, ext)):
+                names.add(os.path.basename(f))
+    return names
+
+
+def find_file_department(filename: str) -> str:
+    """
+    Returns the department name where a filename lives,
+    'clients/ (root)' if flat, or '' if not found.
+    """
+    if os.path.exists(os.path.join(CLIENT_CONTRACTS_DIR, filename)):
+        return "clients/ (root)"
+    for dept in get_departments():
+        if os.path.exists(os.path.join(CLIENT_CONTRACTS_DIR, dept, filename)):
+            return dept
+    return ""
+
+
 def get_files_from_dir(directory: str) -> list:
-    """
-    Returns sorted basenames of all .pdf and .docx files in a directory.
-    """
+    """Returns sorted basenames of all .pdf and .docx files in a directory."""
     if not os.path.exists(directory):
         return []
     return sorted([
@@ -198,10 +230,46 @@ def get_files_from_dir(directory: str) -> list:
         + glob.glob(os.path.join(directory, "*.docx"))
     ])
 
+
+def get_client_files_for_department(selected_dept: str) -> list:
+    """
+    Returns sorted list of client contract filenames based on department filter.
+    - "" or "All departments" -> ALL files from ALL subfolders + flat root
+    - specific dept name      -> only files in that dept subfolder
+    """
+    if not selected_dept or selected_dept == "All departments":
+        all_files = set()
+        for ext in ["*.pdf", "*.docx"]:
+            for f in glob.glob(os.path.join(CLIENT_CONTRACTS_DIR, ext)):
+                all_files.add(os.path.basename(f))
+        for dept in get_departments():
+            dept_dir = os.path.join(CLIENT_CONTRACTS_DIR, dept)
+            for ext in ["*.pdf", "*.docx"]:
+                for f in glob.glob(os.path.join(dept_dir, ext)):
+                    all_files.add(os.path.basename(f))
+        return sorted(list(all_files))
+    else:
+        dept_dir = os.path.join(CLIENT_CONTRACTS_DIR, selected_dept)
+        return get_files_from_dir(dept_dir)
+
+
+def find_client_file_path(filename: str) -> str:
+    """
+    Finds the full path of a client contract by searching
+    flat root and all department subfolders.
+    """
+    flat_path = os.path.join(CLIENT_CONTRACTS_DIR, filename)
+    if os.path.exists(flat_path):
+        return flat_path
+    for dept in get_departments():
+        dept_path = os.path.join(CLIENT_CONTRACTS_DIR, dept, filename)
+        if os.path.exists(dept_path):
+            return dept_path
+    return flat_path
+
+
 def load_doc_text(file_path: str) -> str:
-    """
-    Loads a PDF or .docx document and returns its full text.
-    """
+    """Loads a PDF or .docx document and returns its full text."""
     loader = (
         PyPDFLoader(file_path)
         if file_path.lower().endswith(".pdf")
@@ -209,19 +277,16 @@ def load_doc_text(file_path: str) -> str:
     )
     return "\n".join([p.page_content for p in loader.load()])
 
+
 def log_step(role: str, content: str, status: str = "thought") -> None:
-    """
-    Appends one step to the ReAct trace log.
-    """
+    """Appends one step to the ReAct trace log."""
     st.session_state.agent_log.append({
         "role": role, "content": content, "status": status,
     })
 
+
 def reset_pipeline_for_new_client() -> None:
-    """
-    Clears all pipeline state when user selects a different client contract.
-    Prevents stale data from a previous run contaminating a new analysis.
-    """
+    """Clears all pipeline state when user selects a different client or department."""
     st.session_state.discovered_clauses = []
     st.session_state.extracted_data     = None
     st.session_state.hitl_approved      = False
@@ -231,34 +296,75 @@ def reset_pipeline_for_new_client() -> None:
     st.session_state.selected_clauses   = []
     st.session_state.tool2_result       = None
     st.session_state.pipeline_stage     = 0
+    st.session_state.run_token_total    = 0
 
-def run_discovery_scan(file_name: str, directory: str) -> list:
+
+def run_discovery_scan(file_name: str, file_path: str) -> list:
     """
     Pass 1: Lightweight LLM scan returning section headings only.
+    Accepts full file_path to support department subfolders.
     """
-    full_text = load_doc_text(os.path.join(directory, file_name))
+    full_text = load_doc_text(file_path)
     llm = ChatGoogleGenerativeAI(
         model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY
     )
-    result = llm.with_structured_output(ClauseList).invoke(
+
+    _t0     = time.time()
+    result  = llm.with_structured_output(ClauseList).invoke(
         "You are a legal document parser. "
         "Extract ALL main section headings from this contract. "
         "Return ONLY heading names — no clause content.\n\n" + full_text
     )
+    _dur_ms = int((time.time() - _t0) * 1000)
+
+    _approx_in  = len(full_text) // 4
+    _approx_out = len(str(result.clauses)) // 4
+    logger.log_token_event(
+        tool_name="Discovery Scan",
+        input_tokens=_approx_in,
+        output_tokens=_approx_out,
+        duration_ms=_dur_ms,
+        client_file=file_name,
+        playbook_file=st.session_state.get("playbook_select", ""),
+        department=st.session_state.get("selected_department", ""),
+    )
+    st.session_state.run_token_total += _approx_in + _approx_out
+
     return result.clauses
 
-def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
+
+def save_uploaded_file(uploaded_file, target_dir: str,
+                       is_client_file: bool = False) -> tuple[bool, str]:
     """
-    Saves uploaded file if it doesn't exist.
+    Saves an uploaded file with smart duplicate detection.
+
+    For CLIENT files (is_client_file=True):
+        Enforces GLOBAL uniqueness — same filename cannot exist in ANY department.
+
+    For PLAYBOOK files (is_client_file=False):
+        Only checks within company_standard/ folder.
     """
     if not os.path.exists(target_dir):
         os.makedirs(target_dir, exist_ok=True)
-        
+
+    if is_client_file:
+        # Global uniqueness check across ALL departments + flat root
+        all_existing = get_all_client_filenames()
+        if uploaded_file.name in all_existing:
+            existing_dept = find_file_department(uploaded_file.name)
+            return (
+                False,
+                f"⚠️ **'{uploaded_file.name}'** already exists in **{existing_dept}**.\n\n"
+                f"Filenames must be unique across all departments. "
+                f"Please rename the file before uploading.",
+            )
+    else:
+        # Standard check — only within target directory
+        file_path = os.path.join(target_dir, uploaded_file.name)
+        if os.path.exists(file_path):
+            return (False, f"⚠️ File '{uploaded_file.name}' already exists. Skipping upload.")
+
     file_path = os.path.join(target_dir, uploaded_file.name)
-    
-    if os.path.exists(file_path):
-        return (False, f"⚠️ File '{uploaded_file.name}' already exists. Skipping upload.")
-        
     try:
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getbuffer())
@@ -266,64 +372,64 @@ def save_uploaded_file(uploaded_file, target_dir: str) -> tuple[bool, str]:
     except Exception as e:
         return (False, f"❌ Upload failed: {str(e)}")
 
+
 # ==========================================
 # SECTION 6: PDF GENERATOR FUNCTION
 # ==========================================
 def generate_pdf_report(report_data: FinalRiskReport, client_name: str) -> BytesIO:
-    """
-    Generates a structured PDF from the FinalRiskReport object using reportlab.
-    """
+    """Generates a structured PDF from the FinalRiskReport object using reportlab."""
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=LETTER, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    doc = SimpleDocTemplate(buffer, pagesize=LETTER,
+                            rightMargin=40, leftMargin=40,
+                            topMargin=40,  bottomMargin=40)
     styles = getSampleStyleSheet()
 
-    title_style = styles['Title']
-    heading_style = styles['Heading2']
-    normal_style = styles['Normal']
-    
-    # Custom styles
-    risk_style = ParagraphStyle('RiskStyle', parent=normal_style, fontName='Helvetica-Bold', fontSize=11)
-    verbatim_style = ParagraphStyle('VerbatimStyle', parent=normal_style, fontName='Courier', fontSize=9, leading=12, leftIndent=10, rightIndent=10)
+    title_style    = styles['Title']
+    heading_style  = styles['Heading2']
+    normal_style   = styles['Normal']
+    risk_style     = ParagraphStyle('RiskStyle', parent=normal_style,
+                                    fontName='Helvetica-Bold', fontSize=11)
+    verbatim_style = ParagraphStyle('VerbatimStyle', parent=normal_style,
+                                    fontName='Courier', fontSize=9, leading=12,
+                                    leftIndent=10, rightIndent=10)
 
     elements = []
-    
-    # Report Header
     elements.append(Paragraph("Legal Risk Assessment Report", title_style))
     elements.append(Spacer(1, 10))
-    elements.append(Paragraph(f"<b>Analyzed Document:</b> {html.escape(client_name)}", normal_style))
+    elements.append(Paragraph(
+        f"<b>Analyzed Document:</b> {html.escape(client_name)}", normal_style
+    ))
     elements.append(Spacer(1, 20))
     elements.append(HRFlowable(width="100%", thickness=2, color=colors.darkblue))
     elements.append(Spacer(1, 20))
 
-    # Iterate through risk analyses
     for analysis in report_data.analyses:
-        elements.append(Paragraph(f"Section: {html.escape(analysis.clause_name)}", heading_style))
-        
-        # Color code the risk level
-        risk_color = "red" if analysis.risk_level.lower() == "high" else "orange" if analysis.risk_level.lower() == "medium" else "green"
-        elements.append(Paragraph(f"<font color='{risk_color}'>RISK LEVEL: {analysis.risk_level.upper()}</font>", risk_style))
+        elements.append(Paragraph(
+            f"Section: {html.escape(analysis.clause_name)}", heading_style
+        ))
+        risk_color = ("red"    if analysis.risk_level.lower() == "high"   else
+                      "orange" if analysis.risk_level.lower() == "medium" else "green")
+        elements.append(Paragraph(
+            f"<font color='{risk_color}'>RISK LEVEL: {analysis.risk_level.upper()}</font>",
+            risk_style,
+        ))
         elements.append(Spacer(1, 8))
-
-        # Factual Conflict
         elements.append(Paragraph("<b>Factual Conflict:</b>", normal_style))
         elements.append(Paragraph(html.escape(analysis.factual_conflict), normal_style))
         elements.append(Spacer(1, 8))
-
-        # Client Verbatim
         elements.append(Paragraph("<b>Client Verbatim:</b>", normal_style))
-        elements.append(Paragraph(html.escape(analysis.client_verbatim).replace('\n', '<br/>'), verbatim_style))
+        elements.append(Paragraph(
+            html.escape(analysis.client_verbatim).replace('\n', '<br/>'), verbatim_style
+        ))
         elements.append(Spacer(1, 8))
-
-        # Standard Verbatim
         elements.append(Paragraph("<b>Company Standard Verbatim:</b>", normal_style))
-        elements.append(Paragraph(html.escape(analysis.standard_verbatim).replace('\n', '<br/>'), verbatim_style))
+        elements.append(Paragraph(
+            html.escape(analysis.standard_verbatim).replace('\n', '<br/>'), verbatim_style
+        ))
         elements.append(Spacer(1, 20))
-        
-        # Separator between sections
         elements.append(HRFlowable(width="100%", thickness=1, color=colors.lightgrey))
         elements.append(Spacer(1, 20))
 
-    # Build the PDF
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -333,24 +439,27 @@ def generate_pdf_report(report_data: FinalRiskReport, client_name: str) -> Bytes
 # SECTION 7: AGENT TOOLS (FACTORY PATTERN)
 # ==========================================
 
-def make_tools(selected_client: str, selected_clauses: list, selected_playbook: str = None) -> list:
+def make_tools(selected_client: str, selected_clauses: list,
+               selected_playbook: str = None,
+               client_file_path: str = None) -> list:
     """
     Factory: Creates all 3 agent tools with current context baked in via closure.
+    client_file_path: full path supporting department subfolders.
     """
+    _client_path = client_file_path or find_client_file_path(selected_client)
 
     @tool
     def extract_contract_terms(clause_list: str) -> str:
-        """
-        TOOL 1 — VERBATIM CLAUSE EXTRACTOR.
-        Extracts exact word-for-word text for each specified section.
-        """
+        """TOOL 1 — VERBATIM CLAUSE EXTRACTOR."""
         log_step(" Thought", "Must call Tool 1 first to extract verbatim section text.", "thought")
         log_step(" Action",  f"extract_contract_terms({clause_list})", "action")
 
-        full_text = load_doc_text(os.path.join(CLIENT_CONTRACTS_DIR, selected_client))
+        full_text = load_doc_text(_client_path)
         llm       = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY
         )
+
+        _t0    = time.time()
         result = llm.with_structured_output(ContractData).invoke(
             "MANDATORY EXTRACTION GUARDRAILS\n"
             "--------------------------------\n"
@@ -360,6 +469,19 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
             "--------------------------------\n\n"
             f"Extract VERBATIM text for: {clause_list}\n\nDOCUMENT TEXT:\n{full_text}"
         )
+        _dur_ms     = int((time.time() - _t0) * 1000)
+        _approx_in  = (len(full_text) + len(clause_list)) // 4
+        _approx_out = sum(len(c.verbatim_text) for c in result.extracted_clauses) // 4
+        logger.log_token_event(
+            tool_name="Tool 1 — Extract",
+            input_tokens=_approx_in,
+            output_tokens=_approx_out,
+            duration_ms=_dur_ms,
+            client_file=selected_client,
+            playbook_file=selected_playbook or "",
+            department=st.session_state.get("selected_department", ""),
+        )
+        st.session_state.run_token_total += _approx_in + _approx_out
 
         st.session_state.extracted_data = result
         st.session_state.pipeline_stage = 2
@@ -375,10 +497,7 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
 
     @tool
     def query_playbook(clause_topics: str) -> str:
-        """
-        TOOL 2 — HYBRID PLAYBOOK RETRIEVER.
-        Queries ChromaDB using 50% BM25 keyword + 50% vector semantic search.
-        """
+        """TOOL 2 — HYBRID PLAYBOOK RETRIEVER."""
         log_step(" Thought", "Tool 1 approved. Querying playbook RAG with Tool 2.", "thought")
         log_step(" Action",  f"query_playbook({clause_topics})", "action")
 
@@ -389,9 +508,7 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
         _safe_stem     = "".join(c if c.isalnum() or c in "-_" else "_" for c in _playbook_stem)
         _playbook_dir  = os.path.join(CHROMA_PERSIST_DIR, _safe_stem)
 
-        vector_store = Chroma(
-            persist_directory=_playbook_dir, embedding_function=embeddings
-        )
+        vector_store = Chroma(persist_directory=_playbook_dir, embedding_function=embeddings)
 
         if vector_store._collection.count() == 0:
             return "ERROR: ChromaDB empty. Run: python main.py"
@@ -414,16 +531,27 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
             )
 
         output = "\n\n".join(results)
+
+        _approx_in  = len(clause_topics) // 4
+        _approx_out = len(output) // 4
+        logger.log_token_event(
+            tool_name="Tool 2 — Playbook",
+            input_tokens=_approx_in,
+            output_tokens=_approx_out,
+            duration_ms=0,
+            client_file=selected_client,
+            playbook_file=selected_playbook or "",
+            department=st.session_state.get("selected_department", ""),
+        )
+        st.session_state.run_token_total += _approx_in + _approx_out
+
         st.session_state.tool2_result = output
         log_step(" Observation", output[:500] + "..." if len(output) > 500 else output, "observation")
         return output
 
     @tool
     def generate_risk_report(comparison_context: str) -> str:
-        """
-        TOOL 3 — RISK REPORT GENERATOR.
-        Compares client verbatim text against playbook standards.
-        """
+        """TOOL 3 — RISK REPORT GENERATOR."""
         log_step(" Thought", "Playbook retrieved. Generating risk report with Tool 3.", "thought")
         log_step(" Action",  "generate_risk_report(...)", "action")
 
@@ -439,9 +567,11 @@ def make_tools(selected_client: str, selected_clauses: list, selected_playbook: 
                 f"{'=' * 60}\n"
             )
 
-        llm    = ChatGoogleGenerativeAI(
+        llm = ChatGoogleGenerativeAI(
             model="gemini-2.5-flash", temperature=0, google_api_key=GEMINI_API_KEY
         )
+
+        _t0    = time.time()
         result = llm.with_structured_output(FinalRiskReport).invoke(f"""
 You are a Senior Legal Risk Analyst. Your ONLY function is FACTUAL TEXT COMPARISON.
 
@@ -469,6 +599,29 @@ GUARDRAIL 4 -- CONFIRMATION
 DATA:
 {context}
 """)
+        _dur_ms     = int((time.time() - _t0) * 1000)
+        _approx_in  = len(context) // 4
+        _approx_out = len(json.dumps([a.dict() for a in result.analyses])) // 4
+        logger.log_token_event(
+            tool_name="Tool 3 — Report",
+            input_tokens=_approx_in,
+            output_tokens=_approx_out,
+            duration_ms=_dur_ms,
+            client_file=selected_client,
+            playbook_file=selected_playbook or "",
+            department=st.session_state.get("selected_department", ""),
+        )
+        _final_total = st.session_state.run_token_total + _approx_in + _approx_out
+        st.session_state.run_token_total = _final_total
+
+        logger.log_run(
+            client_file=selected_client,
+            playbook_file=selected_playbook or "",
+            department=st.session_state.get("selected_department", ""),
+            clauses=selected_clauses,
+            risk_report=result,
+            total_tokens=_final_total,
+        )
 
         st.session_state.final_report   = result
         st.session_state.pipeline_stage = 4
@@ -495,6 +648,12 @@ with st.sidebar:
     )
     st.markdown("---")
 
+    # ── ADMIN BUTTON — TOP OF SIDEBAR ─────────────────────────────────────────
+    if st.button("⚙ Admin Panel", use_container_width=True):
+        st.switch_page("pages/admin.py")
+
+    st.markdown("---")
+
     # ── PRE-FETCH DATA FOR CHATBOT RAG ────────────────────────────────────────
     _sidebar_playbooks = get_files_from_dir(COMPANY_PLAYBOOK_DIR)
     _sidebar_active_pb = st.session_state.get("playbook_select")
@@ -503,10 +662,9 @@ with st.sidebar:
     elif not _sidebar_playbooks:
         _sidebar_active_pb = "No files found"
 
-    # ── 1. 💬 LEGAL ASSISTANT (Moved to top) ──────────────────────────────────
+    # ── 1. 💬 LEGAL ASSISTANT ─────────────────────────────────────────────────
     render_chatbot(GEMINI_API_KEY, _sidebar_active_pb, _sidebar_playbooks)
 
-    # Adding vertical breathing room between Chatbot and Document Selection
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("---")
 
@@ -523,11 +681,13 @@ with st.sidebar:
         "Upload Playbook",
         type=["pdf", "docx"],
         key="upload_playbook",
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
-    
+
     if uploaded_playbook and uploaded_playbook.name not in st.session_state.processed_uploads:
-        success, msg = save_uploaded_file(uploaded_playbook, COMPANY_PLAYBOOK_DIR)
+        success, msg = save_uploaded_file(
+            uploaded_playbook, COMPANY_PLAYBOOK_DIR, is_client_file=False
+        )
         if success:
             st.success(msg)
             st.caption("📌 Select the file from the dropdown below and click **Rebuild Playbook DB**.")
@@ -543,34 +703,81 @@ with st.sidebar:
         index=0,
         key="playbook_select",
     )
-    
-    st.markdown("<br>", unsafe_allow_html=True) # visual spacing
 
-    # Client Upload
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── DEPARTMENT FILTER ─────────────────────────────────────────────────────
+    departments  = get_departments()
+    dept_options = ["All departments"] + departments
+
+    selected_dept_display = st.selectbox(
+        "Department:",
+        options=dept_options,
+        help="Filter contracts by department. 'All departments' shows every contract.",
+        key="dept_select",
+    )
+
+    # Map display value to session state value
+    selected_dept = "" if selected_dept_display == "All departments" else selected_dept_display
+
+    # Auto-reset pipeline when department changes
+    if selected_dept != st.session_state.get("last_department"):
+        if st.session_state.get("last_department") is not None:
+            reset_pipeline_for_new_client()
+            st.session_state.last_client = None
+        st.session_state.last_department     = selected_dept
+        st.session_state.selected_department = selected_dept
+
+    st.session_state.selected_department = selected_dept
+
+    # ── Client Upload ─────────────────────────────────────────────────────────
     uploaded_client = st.file_uploader(
         "Upload Client Contract",
         type=["pdf", "docx"],
         key="upload_client",
-        label_visibility="collapsed"
+        label_visibility="collapsed",
     )
-    
+
     if uploaded_client and uploaded_client.name not in st.session_state.processed_uploads:
-        success, msg = save_uploaded_file(uploaded_client, CLIENT_CONTRACTS_DIR)
+        # Upload to selected dept subfolder, or flat root if "All departments"
+        target_dir = (
+            os.path.join(CLIENT_CONTRACTS_DIR, selected_dept)
+            if selected_dept else CLIENT_CONTRACTS_DIR
+        )
+        success, msg = save_uploaded_file(
+            uploaded_client, target_dir, is_client_file=True
+        )
         if success:
-            st.success(msg)
+            dept_label = f"'{selected_dept}'" if selected_dept else "clients/ folder"
+            st.success(f"✅ Uploaded '{uploaded_client.name}' to {dept_label}.")
             st.caption("📌 File uploaded. Select it from the dropdown below to analyze.")
         else:
             st.warning(msg)
         st.session_state.processed_uploads.add(uploaded_client.name)
 
-    client_files = get_files_from_dir(CLIENT_CONTRACTS_DIR)
+    # ── Client Contract dropdown — filtered by department ─────────────────────
+    client_files = get_client_files_for_department(selected_dept)
+
+    if not client_files:
+        dept_msg = (f"No files in '{selected_dept}'"
+                    if selected_dept else "No client contracts found")
+        client_files_display = [dept_msg]
+    else:
+        client_files_display = client_files
+
     selected_client = st.selectbox(
         "Client Contract:",
-        options=client_files if client_files else ["No files found"],
-        help="Client MSA or SOW in clients/",
+        options=client_files_display,
+        help="Client MSA or SOW — filtered by department above.",
         index=0,
         key="client_select",
     )
+
+    # Caption showing file count context
+    if selected_dept and client_files:
+        st.caption(f"Showing {len(client_files)} file(s) from '{selected_dept}'")
+    elif not selected_dept and client_files:
+        st.caption(f"Showing all {len(client_files)} contract(s) across all departments")
 
     # Auto-reset when client changes
     if selected_client != st.session_state.last_client:
@@ -635,7 +842,7 @@ with st.sidebar:
                 try:
                     db = initialize_playbook_db(
                         force_rebuild=True,
-                        selected_playbook=selected_playbook
+                        selected_playbook=selected_playbook,
                     )
                     if db:
                         st.success(
@@ -649,8 +856,15 @@ with st.sidebar:
                     st.error(f"❌ Rebuild error: {e}")
             st.rerun()
 
+# Guard: stop if no valid documents
 if not client_files or not playbook_files:
     st.warning(" No documents found. Check MyFiles/Contracts folders.")
+    st.stop()
+
+# Guard: stop if selected_client is a placeholder message
+_no_file_msgs = {"No files found", "No client contracts found"}
+if selected_client in _no_file_msgs or selected_client.startswith("No files in '"):
+    st.warning("No client contracts available. Upload a contract or select a different department.")
     st.stop()
 
 
@@ -662,9 +876,10 @@ st.markdown(
     "Legal Contract Analyzer</h1>",
     unsafe_allow_html=True,
 )
+_dept_ctx = f" · Department: **{selected_dept}**" if selected_dept else ""
 st.markdown(
     "**ReAct Agent Pipeline** — Sequential tool calling with enforced guardrails, "
-    "HITL approval gate, and verbatim-only conflict detection."
+    f"HITL approval gate, and verbatim-only conflict detection.{_dept_ctx}"
 )
 
 # ==========================================
@@ -692,8 +907,9 @@ with col_btn:
     if st.button(" Run Discovery Scan", type="primary", use_container_width=True):
         with st.spinner("Scanning for section headings..."):
             reset_pipeline_for_new_client()
+            _client_full_path = find_client_file_path(selected_client)
             st.session_state.discovered_clauses = run_discovery_scan(
-                selected_client, CLIENT_CONTRACTS_DIR
+                selected_client, _client_full_path
             )
             st.session_state.pipeline_stage = 1
         st.rerun()
@@ -738,7 +954,9 @@ if st.session_state.discovered_clauses:
         use_container_width=False,
     ):
         with st.spinner("Tool 1: Extracting verbatim section text..."):
-            tools      = make_tools(selected_client, selected_clauses, selected_playbook)
+            _client_full_path = find_client_file_path(selected_client)
+            tools      = make_tools(selected_client, selected_clauses,
+                                    selected_playbook, _client_full_path)
             clause_str = ", ".join(selected_clauses)
             tools[0].invoke({"clause_list": clause_str})
             st.session_state.hitl_approved = False
@@ -754,8 +972,10 @@ render_hitl_gate()
 # SECTION 15: AUTO-RUN TOOL 2 + TOOL 3
 # ==========================================
 if st.session_state.hitl_approved and st.session_state.final_report is None:
-    clause_str = ", ".join(st.session_state.selected_clauses)
-    tools      = make_tools(selected_client, st.session_state.selected_clauses, selected_playbook)
+    clause_str        = ", ".join(st.session_state.selected_clauses)
+    _client_full_path = find_client_file_path(selected_client)
+    tools             = make_tools(selected_client, st.session_state.selected_clauses,
+                                   selected_playbook, _client_full_path)
 
     with st.spinner("Tool 2: Querying company playbook via hybrid search..."):
         tool2_result = tools[1].invoke({"clause_topics": clause_str})
@@ -770,28 +990,22 @@ if st.session_state.hitl_approved and st.session_state.final_report is None:
 # ==========================================
 if st.session_state.final_report:
     st.markdown("---")
-    
-    # Create columns to put Header and Download Button side-by-side
+
     col_header, col_btn = st.columns([3, 1])
-    
+
     with col_header:
         st.markdown("## 📊 Final Risk Assessment Report")
-        
+
     with col_btn:
-        # Generate the PDF in memory
         pdf_buffer = generate_pdf_report(st.session_state.final_report, selected_client)
-        
-        # Add a tiny bit of top margin so the button visually aligns with the text header
         st.markdown("<div style='margin-top: 5px;'></div>", unsafe_allow_html=True)
-        
         st.download_button(
             label="⬇ Download PDF Report",
             data=pdf_buffer,
             file_name=f"Risk_Report_{selected_client.replace('.docx', '').replace('.pdf', '')}.pdf",
             mime="application/pdf",
             use_container_width=True,
-            type="primary"
+            type="primary",
         )
-        
-# Now render the rest of the report (metrics, legend, and risk cards) right below it
+
 render_full_report()
