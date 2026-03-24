@@ -37,6 +37,7 @@ from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 import logger
+import dept_db   # SQLite department metadata layer
 
 # ==========================================
 # SECTION 1: CONFIG & PATHS
@@ -49,7 +50,9 @@ CONTRACTS_DIR        = os.path.join(BASE_DIR, "MyFiles", "Contracts")
 COMPANY_PLAYBOOK_DIR = os.path.join(CONTRACTS_DIR, "company_standard")
 CLIENT_CONTRACTS_DIR = os.path.join(CONTRACTS_DIR, "clients")
 CHROMA_PERSIST_DIR   = os.path.join(BASE_DIR, "chroma_db")
-DEPT_META_PATH       = os.path.join(BASE_DIR, "dept_meta.json")   # A2: head names
+
+# Initialise SQLite dept DB on startup (auto-migrates from dept_meta.json)
+dept_db.init_db()
 
 st.set_page_config(
     page_title="Admin Panel — Legal Contract Analyzer",
@@ -344,40 +347,9 @@ def save_client_file_with_uniqueness_check(
         return (False, f"❌ Upload failed: {str(e)}")
 
 
-# ── A2: Department metadata helpers ───────────────────────────────────────────
-
-def load_dept_meta() -> dict:
-    """Loads dept_meta.json. Returns {} if not found or corrupt."""
-    if not os.path.exists(DEPT_META_PATH):
-        return {}
-    try:
-        with open(DEPT_META_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
-def save_dept_meta(meta: dict) -> None:
-    """Saves dept_meta.json."""
-    try:
-        with open(DEPT_META_PATH, "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
-
-
-def get_dept_head(dept: str) -> str:
-    """Returns head name for a department, or '' if not set."""
-    return load_dept_meta().get(dept, {}).get("head", "")
-
-
-def set_dept_head(dept: str, head: str) -> None:
-    """Sets head name for a department in dept_meta.json."""
-    meta = load_dept_meta()
-    if dept not in meta:
-        meta[dept] = {}
-    meta[dept]["head"] = head.strip()
-    save_dept_meta(meta)
+# ── Department metadata now handled by dept_db (SQLite) ──────────────────────
+# All load_dept_meta / save_dept_meta / get_dept_head / set_dept_head calls
+# replaced with dept_db functions throughout this file.
 
 
 # ==========================================
@@ -506,9 +478,8 @@ with tab1:
                     st.warning(msg)
             st.markdown("</div>", unsafe_allow_html=True)
 
-    # ── Manage departments panel ───────────────────────────────────────────────
+    # ── Manage departments panel — SQLite backed ─────────────────────────────
     if panel_mode == "Manage departments":
-        dept_meta = load_dept_meta()
         with st.container():
             st.markdown(
                 '<div style="background:var(--color-background-secondary);'
@@ -516,7 +487,7 @@ with tab1:
                 unsafe_allow_html=True,
             )
             st.markdown(
-                '<div style="font-size:13px;font-weight:500;margin-bottom:10px;">'
+                '<div style="font-size:13px;font-weight:500;margin-bottom:12px;">'
                 'Manage departments</div>',
                 unsafe_allow_html=True,
             )
@@ -524,52 +495,93 @@ with tab1:
             # ── Create new department ─────────────────────────────────────────
             st.markdown(
                 '<div style="font-size:12px;color:var(--color-text-secondary);'
-                'margin-bottom:4px;">Create new department</div>',
+                'margin-bottom:6px;">Create new department</div>',
                 unsafe_allow_html=True,
             )
-            cr1, cr2, cr3 = st.columns([2, 2, 1])
+            cr1, cr2, cr3, cr4, cr5 = st.columns([2, 2, 2, 2, 1])
             with cr1:
                 new_dept_name = st.text_input(
-                    "Department name", placeholder="e.g. Engineering",
+                    "Dept name", placeholder="Department name",
                     key="new_dept_name_input", label_visibility="collapsed",
                 )
             with cr2:
                 new_dept_head = st.text_input(
-                    "Department head", placeholder="Head name (optional)",
+                    "Head name", placeholder="Head name (optional)",
                     key="new_dept_head_input", label_visibility="collapsed",
                 )
             with cr3:
+                new_dept_email = st.text_input(
+                    "Head email", placeholder="Email (optional)",
+                    key="new_dept_email_input", label_visibility="collapsed",
+                )
+            with cr4:
+                new_dept_phone = st.text_input(
+                    "Head phone", placeholder="Phone (optional)",
+                    key="new_dept_phone_input", label_visibility="collapsed",
+                )
+            with cr5:
                 if st.button("Create", key="create_dept_btn", use_container_width=True):
-                    if new_dept_name.strip():
+                    if not new_dept_name.strip():
+                        st.session_state["create_dept_err"] = "Please enter a department name."
+                    else:
                         new_path = os.path.join(CLIENT_CONTRACTS_DIR, new_dept_name.strip())
                         if os.path.exists(new_path):
                             st.warning(f"'{new_dept_name}' already exists.")
                         else:
-                            os.makedirs(new_path, exist_ok=True)
-                            if new_dept_head.strip():
-                                set_dept_head(new_dept_name.strip(), new_dept_head.strip())
-                            st.toast(f"Department '{new_dept_name}' created.", icon="✅")
-                            st.rerun()
-                    else:
-                        st.error("Please enter a department name.")
+                            # Validate all 4 fields before creating
+                            dname_ok, dname_err = dept_db.validate_dept_name(new_dept_name.strip())
+                            hname_ok, hname_err = dept_db.validate_head_name(new_dept_head.strip())
+                            email_ok, email_err = dept_db.validate_email(new_dept_email.strip())
+                            phone_ok, phone_err = dept_db.validate_phone(new_dept_phone.strip())
+                            # Store error for full-width display outside the button column
+                            if not dname_ok:
+                                st.session_state["create_dept_err"] = dname_err
+                            elif not hname_ok:
+                                st.session_state["create_dept_err"] = hname_err
+                            elif not email_ok:
+                                st.session_state["create_dept_err"] = email_err
+                            elif not phone_ok:
+                                st.session_state["create_dept_err"] = phone_err
+                            else:
+                                st.session_state.pop("create_dept_err", None)
+                                os.makedirs(new_path, exist_ok=True)
+                                dept_db.upsert_dept(
+                                    new_dept_name.strip(),
+                                    new_dept_head.strip(),
+                                    new_dept_email.strip(),
+                                    new_dept_phone.strip(),
+                                )
+                                st.toast(f"Department '{new_dept_name}' created.", icon="✅")
+                                st.rerun()
 
-            # ── Fix 2: Department heads — proper table with inline Edit ──────
+            # Full-width error display for create form — outside the button column
+            if st.session_state.get("create_dept_err"):
+                st.error(st.session_state["create_dept_err"])
+                if st.button("Dismiss", key="dismiss_create_err", type="secondary"):
+                    st.session_state.pop("create_dept_err", None)
+                    st.rerun()
+
+            # ── Department heads table with 5 cols + inline edit ──────────────
             if depts:
                 st.markdown(
+                    '<div style="border-top:0.5px solid var(--color-border-tertiary);'
+                    'margin:14px 0 10px;"></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
                     '<div style="font-size:12px;color:var(--color-text-secondary);'
-                    'margin:14px 0 6px;">Department heads</div>',
+                    'margin-bottom:6px;">Department heads</div>',
                     unsafe_allow_html=True,
                 )
 
-                # Init session state for which dept is currently being edited
                 if "editing_dept_head" not in st.session_state:
                     st.session_state["editing_dept_head"] = None
 
-                # Fix 1: Table header row — bold (font-weight:700)
-                th1, th2, th3 = st.columns([2, 3, 1])
+                # Table column headers — bold
+                th1, th2, th3, th4, th5, th6 = st.columns([1.5, 1.8, 2, 1.8, 1.8, 1])
                 for col, label in zip(
-                    [th1, th2, th3],
-                    ["Department", "Head name", "Action"],
+                    [th1, th2, th3, th4, th5, th6],
+                    ["Department", "Head name", "Email", "Phone", "Updated", "Action"],
                 ):
                     col.markdown(
                         f'<div style="font-size:11px;font-weight:700;'
@@ -583,49 +595,128 @@ with tab1:
                     unsafe_allow_html=True,
                 )
 
+                # Load all dept rows from SQLite once
+                all_db_depts = {d["name"]: d for d in dept_db.get_all_depts()}
+
                 for dept in depts:
-                    current_head = dept_meta.get(dept, {}).get("head", "")
-                    is_editing   = st.session_state["editing_dept_head"] == dept
+                    db_row     = all_db_depts.get(dept, {})
+                    is_editing = st.session_state["editing_dept_head"] == dept
 
-                    tr1, tr2, tr3 = st.columns([2, 3, 1])
+                    tr1, tr2, tr3, tr4, tr5, tr6 = st.columns([1.5, 1.8, 2, 1.8, 1.8, 1])
 
-                    with tr1:
-                        st.markdown(
-                            f'<div style="font-size:13px;font-weight:500;padding:9px 0;">'
-                            f'{dept}</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                    with tr2:
-                        if is_editing:
+                    if is_editing:
+                        # ── Edit mode — all fields inline ─────────────────────
+                        with tr1:
+                            edited_dept_name = st.text_input(
+                                "Dept", value=dept,
+                                key=f"edit_dname_{dept}",
+                                label_visibility="collapsed",
+                            )
+                        with tr2:
                             edited_head = st.text_input(
-                                f"Head for {dept}",
-                                value=current_head,
-                                placeholder="Enter head name...",
+                                "Head", value=db_row.get("head_name", ""),
                                 key=f"edit_head_input_{dept}",
                                 label_visibility="collapsed",
                             )
-                        else:
-                            display_head = current_head if current_head else "—"
+                        with tr3:
+                            edited_email = st.text_input(
+                                "Email", value=db_row.get("head_email", ""),
+                                key=f"edit_email_{dept}",
+                                label_visibility="collapsed",
+                            )
+                        with tr4:
+                            edited_phone = st.text_input(
+                                "Phone", value=db_row.get("head_phone", ""),
+                                key=f"edit_phone_{dept}",
+                                label_visibility="collapsed",
+                            )
+                        with tr5:
                             st.markdown(
-                                f'<div style="font-size:13px;padding:9px 0;'
-                                f'color:var(--color-text-primary);">{display_head}</div>',
+                                '<div style="font-size:11px;color:var(--color-text-secondary);'
+                                'padding:10px 0;">editing...</div>',
+                                unsafe_allow_html=True,
+                            )
+                        with tr6:
+                            if st.button("Save", key=f"save_head_{dept}",
+                                         use_container_width=True, type="primary"):
+                                # Validate all 4 fields
+                                dname_ok, dname_err = dept_db.validate_dept_name(edited_dept_name.strip())
+                                hname_ok, hname_err = dept_db.validate_head_name(edited_head.strip())
+                                email_ok, email_err = dept_db.validate_email(edited_email.strip())
+                                phone_ok, phone_err = dept_db.validate_phone(edited_phone.strip())
+
+                                # Store error in session state so it renders
+                                # FULL WIDTH below the row — never inside a narrow column
+                                if not dname_ok:
+                                    st.session_state[f"dept_err_{dept}"] = dname_err
+                                elif not hname_ok:
+                                    st.session_state[f"dept_err_{dept}"] = hname_err
+                                elif not email_ok:
+                                    st.session_state[f"dept_err_{dept}"] = email_err
+                                elif not phone_ok:
+                                    st.session_state[f"dept_err_{dept}"] = phone_err
+                                else:
+                                    st.session_state.pop(f"dept_err_{dept}", None)
+                                    new_dname = edited_dept_name.strip()
+                                    if new_dname != dept:
+                                        old_path = os.path.join(CLIENT_CONTRACTS_DIR, dept)
+                                        new_path = os.path.join(CLIENT_CONTRACTS_DIR, new_dname)
+                                        if os.path.exists(new_path):
+                                            st.session_state[f"dept_err_{dept}"] = f"A department named '{new_dname}' already exists."
+                                        else:
+                                            try:
+                                                os.rename(old_path, new_path)
+                                                ok, err = dept_db.rename_dept(dept, new_dname)
+                                                if not ok:
+                                                    os.rename(new_path, old_path)
+                                                    st.session_state[f"dept_err_{dept}"] = err
+                                                else:
+                                                    dept_db.upsert_dept(new_dname, edited_head,
+                                                                        edited_email, edited_phone)
+                                                    st.session_state["editing_dept_head"] = None
+                                                    st.toast(f"Renamed to '{new_dname}' and saved.", icon="✅")
+                                                    st.rerun()
+                                            except Exception as e:
+                                                st.session_state[f"dept_err_{dept}"] = f"Rename failed: {e}"
+                                    else:
+                                        dept_db.upsert_dept(dept, edited_head,
+                                                            edited_email, edited_phone)
+                                        st.session_state["editing_dept_head"] = None
+                                        st.toast(f"'{dept}' updated.", icon="✅")
+                                        st.rerun()
+
+                        # Error shown FULL WIDTH below the row — never inside a narrow column
+                        err_key = f"dept_err_{dept}"
+                        if st.session_state.get(err_key):
+                            st.error(st.session_state[err_key])
+                            if st.button("Dismiss", key=f"dismiss_err_{dept}", type="secondary"):
+                                st.session_state.pop(err_key, None)
+                                st.rerun()
+                    else:
+                        # ── Read mode — display values ────────────────────────
+                        def _cell(val, col):
+                            col.markdown(
+                                f'<div style="font-size:12px;padding:9px 0;'
+                                f'color:var(--color-text-primary);word-break:break-word;">'
+                                f'{val if val else "—"}</div>',
                                 unsafe_allow_html=True,
                             )
 
-                    with tr3:
-                        if is_editing:
-                            if st.button("Save", key=f"save_head_{dept}",
-                                         use_container_width=True, type="primary"):
-                                set_dept_head(dept, edited_head)
-                                st.session_state["editing_dept_head"] = None
-                                st.toast(f"Head updated for '{dept}'.", icon="✅")
-                                st.rerun()
-                        else:
-                            if st.button("Edit", key=f"edit_head_{dept}",
-                                         use_container_width=True):
-                                st.session_state["editing_dept_head"] = dept
-                                st.rerun()
+                        _cell(dept,                          tr1)
+                        _cell(db_row.get("head_name",  ""), tr2)
+                        _cell(db_row.get("head_email", ""), tr3)
+                        _cell(db_row.get("head_phone", ""), tr4)
+
+                        updated = db_row.get("updated_at", "")
+                        tr5.markdown(
+                            f'<div style="font-size:11px;color:var(--color-text-secondary);'
+                            f'padding:10px 0;">{updated[:10] if updated else "—"}</div>',
+                            unsafe_allow_html=True,
+                        )
+                        if tr6.button("Edit", key=f"edit_head_{dept}",
+                                      use_container_width=True):
+                            st.session_state["editing_dept_head"] = dept
+                            st.rerun()
 
                     st.markdown(
                         '<div style="border-top:0.5px solid var(--color-border-tertiary);'
@@ -764,8 +855,8 @@ with tab1:
         for f in display_files:
             _render_file_row(f, selected_filter_dept)
     else:
-        # A2: Group by department with header showing head name
-        dept_meta = load_dept_meta()
+        # Group by department — data from SQLite
+        all_db_depts_map = {d["name"]: d for d in dept_db.get_all_depts()}
         groups: dict = {}
         for dept in depts:
             groups[dept] = []
@@ -786,16 +877,27 @@ with tab1:
             )
             label = group_dept if group_dept != "(unorganized)" else "Unorganized files"
 
-            # Fix 3: Two-line header — name+count top, head name below
-            head_name = dept_meta.get(group_dept, {}).get("head", "")
-            head_line = (
-                f'<div style="font-size:11px;color:var(--color-text-info);margin-top:3px;">'
-                f'Head: {head_name}</div>'
-                if head_name
-                else
-                f'<div style="font-size:11px;color:var(--color-text-secondary);'
-                f'font-style:italic;margin-top:3px;">No head assigned</div>'
-            )
+            # Build head info line from SQLite — shows name, email, phone
+            db_row     = all_db_depts_map.get(group_dept, {})
+            head_name  = db_row.get("head_name",  "")
+            head_email = db_row.get("head_email", "")
+            head_phone = db_row.get("head_phone", "")
+
+            if head_name or head_email or head_phone:
+                parts = []
+                if head_name:  parts.append(f"<strong>{head_name}</strong>")
+                if head_email: parts.append(f'<a href="mailto:{head_email}" style="color:var(--color-text-info);">{head_email}</a>')
+                if head_phone: parts.append(head_phone)
+                head_info = " &nbsp;·&nbsp; ".join(parts)
+                head_line = (
+                    f'<div style="font-size:11px;color:var(--color-text-secondary);'
+                    f'margin-top:4px;">Head: {head_info}</div>'
+                )
+            else:
+                head_line = (
+                    f'<div style="font-size:11px;color:var(--color-text-secondary);'
+                    f'font-style:italic;margin-top:4px;">No head assigned</div>'
+                )
 
             st.markdown(
                 f'<div style="background:var(--color-background-secondary);'
@@ -1402,7 +1504,7 @@ with tab4:
                     all_analyzed_pdf = {e.get("client_file") for e in logger.get_history_log()}
 
                     for dept in get_departments():
-                        head = get_dept_head(dept)
+                        head = (dept_db.get_dept(dept) or {}).get('head_name', '')
                         head_info = f" · Head: {head}" if head else ""
                         elements.append(Paragraph(f"Department: {dept}{head_info}", h3_style))
                         dfiles = get_dept_files(dept)
@@ -1463,7 +1565,7 @@ with tab4:
                             h_c = entry.get("high_count",   0)
                             m_c = entry.get("medium_count", 0)
                             l_c = entry.get("low_count",    0)
-                            dept_h = get_dept_head(entry.get("department") or "")
+                            dept_h = (dept_db.get_dept(entry.get("department") or "") or {}).get("head_name", "")
                             dept_display = entry.get("department") or "—"
                             if dept_h:
                                 dept_display += f" (Head: {dept_h})"
@@ -1619,7 +1721,7 @@ with tab4:
 
                     all_analyzed_xl = {e.get("client_file") for e in logger.get_history_log()}
                     all_files_xl    = get_all_client_files()
-                    dept_meta_xl    = load_dept_meta()
+                    dept_meta_xl    = {d["name"]: d for d in dept_db.get_all_depts()}
 
                     # Sheet 1: Overview
                     ws1       = wb.active

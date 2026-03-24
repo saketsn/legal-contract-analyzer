@@ -35,5 +35,71 @@
         "factual_conflict": "The client contract's \"SECTION 2: SCOPE OF SERVICES\" details how services will be provided and managed, while the company standard for \"SECTION 2: SCOPE OF SERVICES\" describes \"SECTION 2: VENDOR ONBOARDING PROCEDURES\" and includes a clause about breach notification windows."
       }
     ]
+  },
+  {
+    "run_id": "20260324104117",
+    "timestamp": "2026-03-24T10:41:17",
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT",
+    "clauses_selected": [
+      "SECTION 1: DEFINITIONS",
+      "SECTION 2: SCOPE OF SERVICES"
+    ],
+    "clause_count": 2,
+    "high_count": 0,
+    "medium_count": 2,
+    "low_count": 0,
+    "total_tokens": 25520,
+    "clause_detail": [
+      {
+        "clause_name": "SECTION 1: DEFINITIONS",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract includes a dedicated Section 1 for definitions of terms such as \"Agreement,\" \"Confidential Information,\" and \"Deliverables,\" while the company standard's Section 1 does not provide a corresponding list of definitions for these terms."
+      },
+      {
+        "clause_name": "SECTION 2: SCOPE OF SERVICES",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract's Section 2 details the operational scope of services, including performance standards and change order procedures, whereas the company standard's Section 2 focuses on vendor onboarding procedures and contract execution requirements without addressing these specific operational aspects of service scope."
+      }
+    ]
+  },
+  {
+    "run_id": "20260324153007",
+    "timestamp": "2026-03-24T15:30:07",
+    "client_file": "Initech_Inc_MSA_HIGH_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "",
+    "clauses_selected": [
+      "SECTION 1: DEFINITIONS",
+      "SECTION 2: SCOPE OF SERVICES"
+    ],
+    "clause_count": 2,
+    "high_count": 1,
+    "medium_count": 2,
+    "low_count": 0,
+    "total_tokens": 28431,
+    "clause_detail": [
+      {
+        "clause_name": "SECTION 1: DEFINITIONS",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The company standard does not provide definitions for the terms defined in the client's Section 1."
+      },
+      {
+        "clause_name": "SECTION 2: SCOPE OF SERVICES (SOW Templates)",
+        "risk_level": "High",
+        "conflict_found": true,
+        "factual_conflict": "The client states that client-form SOWs shall not be accepted unless countersigned by Initech's Chief Revenue Officer, whereas the company standard discourages vendor paper but allows it with a full redline review by Legal."
+      },
+      {
+        "clause_name": "SECTION 2: SCOPE OF SERVICES (Remaining Clauses)",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The company standard does not contain provisions regarding Initech's right to determine the manner and means of services, personnel reassignment, the impact of client delays on Initech's obligations and client's fees, or Initech's right to engage subcontractors without client consent."
+      }
+    ]
   }
 ]
