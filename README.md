@@ -1,6 +1,6 @@
 # Legal Contract Analyzer
 
-> **AI-powered legal contract risk analysis platform** built on a ReAct Agent pipeline with enforced zero-inference guardrails, Human-in-the-Loop (HITL) review, hybrid RAG retrieval, and verbatim-only conflict detection.
+> **AI-powered legal contract risk analysis platform** built on a ReAct Agent pipeline with enforced zero-inference guardrails, Human-in-the-Loop (HITL) review, hybrid RAG retrieval, verbatim-only conflict detection, and a full admin panel with department-wise document management and LLM token analytics.
 
 ---
 
@@ -8,29 +8,29 @@
 
 - [Overview](#overview)
 - [Architecture](#architecture)
-- [Feature List](#feature-list)
+- [Features](#features)
 - [Tech Stack](#tech-stack)
 - [Project Structure](#project-structure)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
+- [Setup & Installation](#setup--installation)
 - [Configuration](#configuration)
 - [Running the Application](#running-the-application)
-- [Using the Application](#using-the-application)
-- [Guardrails System](#guardrails-system)
-- [ReAct Agent Pipeline](#react-agent-pipeline)
-- [Vector Database (ChromaDB)](#vector-database-chromadb)
-- [PDF Export](#pdf-export)
-- [Sidebar Legal Assistant (RAG Chatbot)](#sidebar-legal-assistant-rag-chatbot)
-- [Troubleshooting](#troubleshooting)
-- [Development Notes](#development-notes)
+- [Using the Main App](#using-the-main-app)
+- [Using the Admin Panel](#using-the-admin-panel)
+- [Guardrails & Safety Rules](#guardrails--safety-rules)
+- [RAG Implementation](#rag-implementation)
+- [Database Design](#database-design)
+- [API & Token Cost Reference](#api--token-cost-reference)
+- [Git Tags & Versioning](#git-tags--versioning)
+- [Known Limitations](#known-limitations)
+- [Future Improvements](#future-improvements)
 
 ---
 
 ## Overview
 
-The **Legal Contract Analyzer** is a Streamlit-based web application that automates the comparison of client contracts against a company's internal legal playbook. It uses a multi-step **ReAct (Reasoning + Acting) agent pipeline** powered by Google Gemini 2.5 Flash to extract, retrieve, and analyze legal clauses — producing a structured **HIGH / MEDIUM / LOW risk report** with verbatim text evidence for every finding.
+The Legal Contract Analyzer is a single-agent AI application that acts as an automated legal analyst. It compares client contracts (MSAs, SOWs) against a company's internal standard playbook and produces a structured, clause-level risk report — with zero tolerance for inference, summarization, or legal advice.
 
-The system is engineered around a strict **Zero-Inference Rule**: all outputs are grounded exclusively in literal text from source documents. No legal advice, no inferred intent, no hallucinated content.
+The system is built around a strict **ReAct (Reasoning and Acting)** loop that enforces a sequential, auditable tool-calling pipeline. Every risk flag must include the exact verbatim text from the source document. The agent is forbidden from inferring legal intent.
 
 ---
 
@@ -38,85 +38,75 @@ The system is engineered around a strict **Zero-Inference Rule**: all outputs ar
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                        STREAMLIT UI (app.py)                    │
+│                        Streamlit UI (app.py)                    │
 │                                                                 │
-│  Sidebar                     │  Main Panel                      │
-│  ─────────────────────────── │  ─────────────────────────────── │
-│  💬 RAG Chatbot              │  Pipeline Status Bar (sticky)    │
-│  📂 Document Selection       │  ReAct Trace Log (live)          │
-│  📤 File Uploads             │  Step 1: Discovery Scan          │
-│  🔧 System Status            │  Step 2: Clause Selection        │
-│  🗄️ Playbook DB Builder      │  ⏸️ HITL Gate (Approve/Reject)  │
-│                              │  📊 Final Risk Report            │
-│                              │  ⬇️ PDF Export                  │
-└─────────────────────────────────────────────────────────────────┘
-
-ReAct Agent Tool Chain
-──────────────────────
-Tool 1: extract_contract_terms   → Verbatim clause extractor (Gemini + Pydantic)
-           ↓  [HITL GATE — human reviews, approves or rejects]
-Tool 2: query_playbook           → Hybrid BM25 (50%) + Vector (50%) retrieval
-           ↓
-Tool 3: generate_risk_report     → Factual comparison → HIGH / MEDIUM / LOW
-
-Vector Store
-────────────
-ChromaDB (persistent, per-playbook subfolder)
-  + BM25 keyword retrieval (rank_bm25)
-  + Gemini Embeddings (gemini-embedding-001)
-  = EnsembleRetriever (hybrid, equal weight)
+│  Sidebar: Dept Filter → Playbook Select → Client Contract       │
+│           Legal Assistant Chatbot (RAG-powered)                 │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Discovery Scan  │  (lightweight heading extractor)
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │    Tool 1        │  extract_contract_terms()
+                    │  Verbatim        │  → Pydantic: ContractData
+                    │  Extraction      │  → GUARDRAIL: no summaries
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   HITL Gate      │  Human must APPROVE or REJECT
+                    │  (pipeline       │  before proceeding
+                    │   paused)        │
+                    └────────┬────────┘
+                             │  APPROVED
+                    ┌────────▼────────┐
+                    │    Tool 2        │  query_playbook()
+                    │  Hybrid RAG      │  → BM25 + ChromaDB vector search
+                    │  Retrieval       │  → Returns playbook standards
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │    Tool 3        │  generate_risk_report()
+                    │  Risk Report     │  → Pydantic: FinalRiskReport
+                    │  Generator       │  → HIGH / MEDIUM / LOW per clause
+                    └────────┬────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  Final Report    │  Rendered in UI + PDF export
+                    │  + Logging       │  → token_log.json + history_log.json
+                    └─────────────────┘
 ```
+
+**Admin Panel** (`pages/admin.py`) runs as a separate Streamlit page with a password gate. It reads from the same log files and SQLite database but never touches the main pipeline.
 
 ---
 
-## Feature List
+## Features
 
-### Core Pipeline
-- **Discovery Scan** — Lightweight LLM scan that returns only section headings from a client contract (no clause content is extracted at this stage, minimizing token cost)
-- **Verbatim Clause Extraction (Tool 1)** — Extracts exact, word-for-word text for each selected section using Gemini 2.5 Flash with structured output (Pydantic `ContractData` schema)
-- **Human-in-the-Loop (HITL) Gate** — Pipeline pauses after Tool 1; human reviews all extracted clauses and must explicitly APPROVE or REJECT before analysis continues
-- **Hybrid Playbook Retrieval (Tool 2)** — Queries ChromaDB using a 50% BM25 keyword + 50% semantic vector `EnsembleRetriever` for maximum recall
-- **Risk Report Generation (Tool 3)** — Compares verbatim client text against playbook standards, classifies each clause as HIGH / MEDIUM / LOW, and produces one factual conflict sentence per clause
+### Main Application
 
-### Guardrails (Pydantic-Enforced)
-- **Guardrail 1 — No Summary** — Rejects `verbatim_text` fields that look like a summary at the data layer (validator checks for trigger phrases and minimum length)
-- **Guardrail 2 — Risk Level Enforcer** — `risk_level` must be exactly `High`, `Medium`, or `Low`; all other values raise a `ValueError`
-- **Guardrail 3 — Zero-Inference Rule** — `factual_conflict` is rejected if it contains inference language (`may imply`, `could suggest`, `appears to`, `probably`, etc.)
-- **Guardrail 4 — Guardrail Note Confirmation** — Each analysis block must include a verbatim guardrail confirmation statement
+- **5-Stage ReAct Pipeline** — Discovery Scan → Tool 1 → HITL Gate → Tool 2 → Tool 3
+- **Verbatim-Only Extraction** — Pydantic validators enforce character-for-character copying, rejecting any summarization attempt at the schema layer
+- **Zero-Inference Rule** — The agent is forbidden from inferring intent; it only reports literal textual contradictions
+- **Human-in-the-Loop (HITL) Gate** — Pipeline pauses after Tool 1; user reviews extracted clauses and must explicitly Approve or Reject before analysis proceeds
+- **Hybrid RAG Retrieval** — Tool 2 combines BM25 keyword search and ChromaDB vector search (50/50 ensemble) for more accurate playbook standard retrieval
+- **Semantic Chunking** — Playbook documents are chunked using paragraph-first separators to preserve complete legal clauses within a single chunk
+- **Department-wise Contract Management** — Client contracts organised into department subfolders; sidebar filters by department
+- **Legal Assistant Chatbot** — RAG-powered sidebar chatbot that answers questions about the active playbook using ChromaDB similarity search
+- **PDF Risk Report Export** — One-click download of the full risk assessment report as a formatted PDF
+- **Auto-rebuild Detection** — ChromaDB uses MD5 hashing to detect playbook file changes and auto-rebuilds only when necessary
 
-### Document Management
-- **Multi-format support** — Accepts `.pdf` and `.docx` for both playbooks and client contracts
-- **In-app file upload** — Upload playbooks and client contracts directly from the sidebar; files are saved to the correct directory automatically
-- **Duplicate upload prevention** — `processed_uploads` session state set prevents duplicate upload warnings on re-render
-- **Auto-reset on client change** — Switching to a different client contract automatically clears all pipeline state to prevent stale data contamination
+### Admin Panel
 
-### Vector Database
-- **Per-playbook ChromaDB isolation** — Each playbook gets its own `chroma_db/<playbook_stem>/` subfolder; switching playbooks is instant if previously embedded
-- **MD5 hash change detection** — On every load, the current file hash is compared against the stored hash; the database is automatically rebuilt if the file has changed
-- **Force rebuild button** — UI "Rebuild Playbook DB" button in the sidebar triggers a fresh build for the selected playbook only
-- **Hash metadata storage** — Build timestamp, playbook filename, and MD5 hash are stored as JSON in `.playbook_hash` inside each playbook's ChromaDB folder
-
-### UI & UX
-- **Sticky pipeline status bar** — 5-stage visual tracker (Discovery → Tool 1 → HITL → Tool 2 → Tool 3) updates in real time with Done ✅ / Active 🔄 / Waiting ⏳ states
-- **Live ReAct trace panel** — Collapsible expander shows every Thought / Action / Observation / Human Decision / Final Answer log entry in color-coded blocks
-- **Risk cards with side-by-side verbatim comparison** — Each clause card shows client text and company standard text in full monospace boxes (no truncation, no max-height scroll cutoff)
-- **Risk level legend** — Persistent HIGH / MEDIUM / LOW explanation cards above the report
-- **Summary metrics** — Total / High / Medium / Low clause counts displayed as Streamlit `st.metric` widgets
-- **System status panel** — Sidebar shows ChromaDB health, playbook file status, and client contract status at a glance
-
-### PDF Export
-- **One-click PDF download** — Generates a structured PDF report using `reportlab` in memory (no temp files)
-- **Color-coded risk levels** — RED for HIGH, ORANGE for MEDIUM, GREEN for LOW in the PDF
-- **Full verbatim text** — Both client verbatim and company standard verbatim sections are included in monospace font
-- **Named file download** — Download filename is derived from the client contract name
-
-### Sidebar Legal Assistant (RAG Chatbot)
-- **Always-visible chat panel** — Embedded in the sidebar, available at all times without leaving the main workflow
-- **RAG-augmented responses** — Silently queries the active ChromaDB on every message; top-3 most relevant chunks are injected into the system prompt
-- **Dynamic system prompt** — Includes current playbook names, selected playbook, and retrieved context per message
-- **Quick-start chips** — 6 pre-built question buttons for new users (How to use, list playbooks, liability cap, notice period, guardrails, RAG explanation)
-- **Conversation history** — Maintains up to 8 turns of history per session; clear button resets history
-- **Graceful RAG fallback** — If ChromaDB is not built yet, chatbot continues to function without RAG context
+- **Password-protected access** — 5-attempt lockout with 60-second cooldown
+- **Department Management** — Create, rename, edit departments with head name / email / phone (all required, production-level validated)
+- **Contract File Management** — Browse, filter, move, and delete contracts by department; global filename uniqueness enforced across all departments
+- **Playbook Management** — Upload, delete, or wipe ChromaDB for any playbook
+- **Token Usage Analytics** — Per-tool token breakdown, cost estimates, daily usage charts (Bar/Line toggle, expandable), date range picker
+- **Analysis History Log** — Full pipeline run history with clause-level risk detail, searchable and filterable
+- **Downloadable Reports** — PDF and Excel exports with overview metrics, token breakdown, department file listing, history, and raw token log
+- **SQLite Department Store** — Department metadata stored in `dept.db` with WAL mode for safe concurrent access
 
 ---
 
@@ -124,16 +114,18 @@ ChromaDB (persistent, per-playbook subfolder)
 
 | Layer | Technology |
 |---|---|
-| UI Framework | Streamlit 1.45.0 |
+| UI Framework | Streamlit |
 | LLM | Google Gemini 2.5 Flash (`gemini-2.5-flash`) |
-| Embeddings | Google Gemini Embedding (`gemini-embedding-001`) |
-| Agent Framework | LangChain 0.3.25 + LangChain Tools |
-| Vector Store | ChromaDB 0.6.3 via `langchain-chroma` 0.2.3 |
-| Keyword Retrieval | BM25 via `rank_bm25` 0.2.2 |
-| Data Validation | Pydantic 2.11.4 |
-| Document Loaders | `PyPDFLoader`, `Docx2txtLoader` (langchain-community) |
-| PDF Generation | ReportLab 4.2.5 |
-| Environment | `python-dotenv` 1.1.0 |
+| Embeddings | Google Gemini Embedding (`models/gemini-embedding-001`) |
+| Agent Framework | LangChain |
+| Vector Store | ChromaDB (persistent, local) |
+| Keyword Search | BM25 (via `langchain-community`) |
+| Schema Validation | Pydantic v2 |
+| Document Loading | PyPDFLoader, Docx2txtLoader |
+| Department DB | SQLite (via Python `sqlite3`, WAL mode) |
+| PDF Generation | ReportLab |
+| Excel Generation | openpyxl |
+| Environment Config | python-dotenv |
 
 ---
 
@@ -142,382 +134,352 @@ ChromaDB (persistent, per-playbook subfolder)
 ```
 AI-AGENT-PROJECT/
 │
-├── app.py                        # Main application entry point
-├── chatbot_component.py          # Sidebar RAG chatbot
-├── main.py                       # ChromaDB vector store builder
-├── ui_components.py              # All Streamlit UI rendering functions
+├── app.py                    # Main application entry point
+├── main.py                   # ChromaDB vector store builder
+├── logger.py                 # Append-only JSON event logger
+├── dept_db.py                # SQLite department metadata layer
+├── chatbot_component.py      # Sidebar Legal Assistant chatbot
+├── ui_components.py          # All Streamlit UI rendering functions
 │
-├── requirements.txt              # Python dependencies
-├── .env                          # Environment variables (not committed)
-├── .gitignore
+├── pages/
+│   └── admin.py              # Admin panel (password-protected)
 │
 ├── MyFiles/
 │   └── Contracts/
-│       ├── company_standard/     # Playbook files (.pdf or .docx)
-│       └── clients/              # Client contract files (.pdf or .docx)
+│       ├── company_standard/ # Playbook files (.docx / .pdf)
+│       └── clients/          # Client contracts, organised by dept
+│           ├── Engineering/
+│           ├── Finance/
+│           ├── HR/
+│           └── ...
 │
-├── chroma_db/                    # Persisted ChromaDB vector stores
-│   └── <playbook_stem>/          # One subfolder per playbook
-│       └── .playbook_hash        # MD5 hash + build metadata (JSON)
+├── chroma_db/                # Persisted ChromaDB vector stores
+│   └── <playbook_stem>/      # One subfolder per playbook
+│       ├── .playbook_hash    # MD5 hash + build timestamp
+│       └── chroma.sqlite3
 │
-└── venv/                         # Python virtual environment
+├── dept.db                   # SQLite department metadata (gitignored)
+├── token_log.json            # LLM token usage log (gitignored)
+├── history_log.json          # Pipeline run history (gitignored)
+│
+├── .env                      # API keys and admin password (gitignored)
+├── .gitignore
+└── requirements.txt
 ```
 
 ---
 
-## Prerequisites
+## Setup & Installation
 
-- **Python 3.11 or 3.12** — Recommended. Python 3.13 is supported but see the note in `requirements.txt` about numpy compatibility.
-- **Google Gemini API Key** — Required. Get one at [Google AI Studio](https://aistudio.google.com/).
-- A **company standard playbook** document (`.pdf` or `.docx`) to use as the legal baseline.
-- One or more **client contract** documents (`.pdf` or `.docx`) to analyze.
+### Prerequisites
 
----
+- Python 3.10 or higher
+- A Google Gemini API key ([get one here](https://aistudio.google.com/app/apikey))
 
-## Installation
-
-### 1. Clone the Repository
+### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
-cd AI-AGENT-PROJECT
+git clone https://github.com/saketsn/legal-contract-analyzer.git
+cd legal-contract-analyzer
 ```
 
-### 2. Create a Virtual Environment
+### 2. Create and activate a virtual environment
 
 ```bash
+# Windows
 python -m venv venv
-```
-
-Activate it:
-
-```bash
-# macOS / Linux
-source venv/bin/activate
-
-# Windows (Command Prompt)
 venv\Scripts\activate
 
-# Windows (PowerShell)
-venv\Scripts\Activate.ps1
+# macOS / Linux
+python -m venv venv
+source venv/bin/activate
 ```
 
-### 3. Install Dependencies
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-> **Note for Python 3.13 users:** The `requirements.txt` pins `langchain-chroma==0.2.3` which supports `numpy>=2.0`, resolving the numpy conflict introduced in Python 3.13. No additional steps are needed.
-
-### 4. Create the Required Directory Structure
+### 4. Create the required folder structure
 
 ```bash
-mkdir -p MyFiles/Contracts/company_standard
-mkdir -p MyFiles/Contracts/clients
+mkdir -p "MyFiles/Contracts/company_standard"
+mkdir -p "MyFiles/Contracts/clients"
 ```
 
-### 5. Add Your Documents
+### 5. Add your documents
 
-- Place your **company playbook** (`.pdf` or `.docx`) in `MyFiles/Contracts/company_standard/`
-- Place your **client contracts** (`.pdf` or `.docx`) in `MyFiles/Contracts/clients/`
+- Place your **company standard playbook** (`.docx` or `.pdf`) inside `MyFiles/Contracts/company_standard/`
+- Place your **client contracts** (`.docx` or `.pdf`) inside `MyFiles/Contracts/clients/` or in a department subfolder
 
-You can also upload files directly from the sidebar after launching the app.
-
----
-
-## Configuration
+### 6. Configure environment variables
 
 Create a `.env` file in the project root:
 
 ```env
-GEMINI_API_KEY=your_google_gemini_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+ADMIN_PASSWORD=your_admin_password_here
 ```
 
-The application will not start without this key. If it is missing, an error banner is shown and execution halts.
-
----
-
-## Running the Application
-
-### Step 1 — Build the Vector Database
-
-Before the first launch, run the database builder to embed your playbook:
+### 7. Build the ChromaDB vector store
 
 ```bash
 python main.py
 ```
 
-Expected output:
-
+You should see:
 ```
-[SYSTEM BOOT] Initializing Legal Agent Backend...
-  [Contracts root]: EXISTS
-  [Company Playbook dir]: EXISTS
-  [Client Contracts dir]: EXISTS
-
-[DB SETUP] Initializing Company Playbook Database...
-[DB SETUP] Found playbook: your_playbook.pdf
-[HASH CHECK] Computing file hash...
-[HASH CHECK] No existing database. Building for first time...
-[DB SETUP] Building new vector store (30-60 seconds)...
-  -> Reading: your_playbook.pdf...
-  -> Success: 87 chunks created.
-[DB SETUP] Database built! (87 chunks stored)
-[HASH CHECK] Hash saved.
-
 [SYSTEM BOOT] SUCCESS -- RAG Memory is online and ready.
 ```
 
-> **Tip:** You only need to run `main.py` once. After that, the app auto-detects changes using MD5 hashing and rebuilds automatically — or you can click "Rebuild Playbook DB" in the sidebar.
+---
 
-### Step 2 — Launch the App
+## Configuration
+
+| Variable | File | Description |
+|---|---|---|
+| `GEMINI_API_KEY` | `.env` | Google Gemini API key (required) |
+| `ADMIN_PASSWORD` | `.env` | Admin panel login password (default: `admin123`) |
+| `CONTRACTS_DIR` | `app.py` / `main.py` | Root path for all contract documents |
+| `CHROMA_PERSIST_DIR` | `app.py` / `main.py` | Path for ChromaDB persistence |
+| `PRICE_INPUT_PER_1M` | `logger.py` | Gemini input token price (USD per 1M tokens) |
+| `PRICE_OUTPUT_PER_1M` | `logger.py` | Gemini output token price (USD per 1M tokens) |
+
+---
+
+## Running the Application
 
 ```bash
 streamlit run app.py
 ```
 
-The application opens at `http://localhost:8501` in your browser.
+The app opens at `http://localhost:8501` by default.
+
+To access the **Admin Panel**, click the **⚙ Admin Panel** button at the top of the sidebar and enter the password set in `.env`.
 
 ---
 
-## Using the Application
+## Using the Main App
 
-### End-to-End Workflow
+### Step 1 — Select Documents
 
-**1. Select Documents (Sidebar)**
-- Choose your company playbook from the "Company Playbook" dropdown.
-- Choose the client contract from the "Client Contract" dropdown.
-- Verify the System Status panel shows "ChromaDB Online — Up to date".
+In the sidebar:
+1. Select a **Department** (or leave as "All departments")
+2. Select the **Company Playbook** to use as the standard
+3. Select the **Client Contract** to analyse
+4. Optionally upload new files using the file upload widgets
 
-**2. Run Discovery Scan (Main Panel — Step 1)**
-- Click **Run Discovery Scan**.
-- The app performs a lightweight LLM scan and returns all section headings found in the client contract.
-- No clause content is extracted at this stage.
+### Step 2 — Run Discovery Scan
 
-**3. Select Sections to Analyze (Step 2)**
-- Use the multiselect widget to choose which sections you want to analyze.
-- The first 3 sections are pre-selected by default.
+Click **Run Discovery Scan**. The agent makes a lightweight LLM call to extract all section headings from the client contract. No clause content is extracted at this stage.
 
-**4. Analyze Selected Sections**
-- Click **Analyze Selected Sections**.
-- Tool 1 runs and extracts verbatim text for each selected section.
-- The pipeline **pauses automatically** and the HITL gate appears.
+### Step 3 — Select Clauses
 
-**5. Human Review (HITL Gate)**
-- Review each extracted clause in the expandable panels.
-- Click **Proceed** to approve and automatically run Tool 2 + Tool 3.
-- Click **Go back, discard clauses, and reselect** to reject the extraction and start over.
+From the discovered headings, select the specific clauses you want to analyse using the multiselect dropdown.
 
-**6. Automatic Analysis (Tools 2 + 3)**
-- Upon approval, Tool 2 queries the playbook via hybrid search.
-- Tool 3 generates the full risk report.
-- The pipeline status bar advances to stage 5.
+### Step 4 — Analyse
 
-**7. Review the Report**
-- The final risk report is displayed with summary metrics and individual clause cards.
-- Each card shows: risk level, client verbatim text, company standard verbatim text, factual conflict statement, and guardrail confirmation.
+Click **Analyse Selected Sections**. Tool 1 runs and extracts verbatim text for each selected clause. The pipeline then **pauses** at the HITL Gate.
 
-**8. Export to PDF**
-- Click **⬇ Download PDF Report** (top-right of the report section).
-- A structured PDF is downloaded instantly.
+### Step 5 — HITL Review
 
-### Uploading New Documents
+Review the verbatim-extracted clauses displayed on screen. Click:
+- **Proceed** — approves the extraction; Tools 2 and 3 run automatically
+- **Go back, discard and reselect** — discards the extraction; re-select clauses and try again
 
-You can upload files directly from the sidebar without touching the filesystem:
+### Step 6 — View Report
 
-- **Upload Playbook** — Saved to `MyFiles/Contracts/company_standard/`. After uploading, select the file from the dropdown and click "Rebuild Playbook DB".
-- **Upload Client Contract** — Saved to `MyFiles/Contracts/clients/`. Select from the dropdown to analyze.
-
-Uploading the same file twice is safe — the app detects duplicates and skips re-saving.
+The final risk report appears with HIGH / MEDIUM / LOW classification per clause, verbatim quotes from both the client contract and company standard, and a one-sentence factual conflict statement. Download as PDF using the **Download PDF Report** button.
 
 ---
 
-## Guardrails System
+## Using the Admin Panel
 
-The system enforces four Pydantic-level guardrails that operate at the data layer, independent of the LLM prompt:
+### Access
 
-### Guardrail 1 — No Summary (Tool 1 Output)
+Click **⚙ Admin Panel** in the sidebar → enter password → you are in.
 
-Validates the `verbatim_text` field of each `ExtractedClause`. If the text is shorter than 120 characters **and** contains any of the following trigger phrases, a `ValueError` is raised and the extraction is rejected:
+### Tab 1 — Documents
 
-```
-"this section outlines", "this clause states", "the parties agree that",
-"as described above", "sets forth the terms", "this agreement provides"
-```
+- **Summary metrics** — department count, total contracts, unanalyzed count
+- **Client Contracts table** — filter by department, search by filename, filter by analyzed/unanalyzed status; move files between departments or delete
+- **Upload Contract** — upload a new client contract to a specific department (global filename uniqueness enforced)
+- **Manage Departments** — create new departments (head name, email, phone all required); edit existing department head details including renaming
+- **Company Playbooks** — view playbook files, wipe ChromaDB (keeps file), or delete completely (removes file and DB)
 
-### Guardrail 2 — Risk Level Enforcer (Tool 3 Output)
+### Tab 2 — Token Usage
 
-The `risk_level` field is validated to be exactly one of: `High`, `Medium`, `Low`. Any other value (e.g., `"Moderate"`, `"Critical"`, `"N/A"`) raises a `ValueError`.
+- Summary metrics: total tokens, estimated cost, API calls, average duration
+- Token usage by tool — bar or line chart (expandable), per-tool breakdown table
+- Daily token usage chart
+- Raw token log with tool filter
+- Calendar date range picker to filter any period
 
-### Guardrail 3 — Zero-Inference Rule (Tool 3 Output)
+### Tab 3 — History
 
-The `factual_conflict` field is scanned for banned inference phrases:
+- Summary: total runs, high-risk runs, average clauses per run, top department
+- Filter by filename or department
+- Expandable run cards showing clause-level risk detail
+- Delete individual runs
 
-```
-"may imply", "could suggest", "appears to", "seems to",
-"likely means", "probably", "it is possible", "might indicate"
-```
+### Tab 4 — Export
 
-If any are found, the field is rejected. Only literal, explicit textual differences are permitted.
-
-### Guardrail 4 — Guardrail Note Confirmation
-
-The `guardrail_note` field must contain the exact statement confirming that the analysis is based solely on literal text comparison and that no legal advice or intent inference was provided.
-
----
-
-## ReAct Agent Pipeline
-
-The pipeline follows the **Reasoning + Acting (ReAct)** pattern. Each tool is created via a factory function (`make_tools`) that bakes in the current session context (selected client, selected clauses, selected playbook) via closures.
-
-```
-User selects clauses
-        │
-        ▼
-  [THOUGHT] "Must call Tool 1 to extract verbatim text"
-  [ACTION]  extract_contract_terms(clause_list)
-  [OBS]     JSON preview of extracted clauses (250 char preview per clause)
-        │
-        ▼
-  ══════════════════════════════
-  ⏸️  HITL GATE — Human reviews
-      APPROVE → continue
-      REJECT  → discard + return to selection
-  ══════════════════════════════
-        │
-        ▼
-  [THOUGHT] "Tool 1 approved. Querying playbook RAG with Tool 2."
-  [ACTION]  query_playbook(clause_topics)
-  [OBS]     Retrieved playbook standard text (500 char preview)
-        │
-        ▼
-  [THOUGHT] "Playbook retrieved. Generating risk report with Tool 3."
-  [ACTION]  generate_risk_report(comparison_context)
-  [OBS]     JSON summary of all clause risk levels
-  [FINAL]   "Report complete. N sections analyzed."
-```
-
-All steps are logged to `st.session_state.agent_log` and rendered in the live ReAct trace panel.
+- Select any date range using the calendar picker
+- Generate a full **PDF report** (5 sections: overview, token breakdown, dept files, history, raw log)
+- Generate a full **Excel report** (5 sheets with the same data, color-coded risk cells)
 
 ---
 
-## Vector Database (ChromaDB)
+## Guardrails & Safety Rules
 
-### How It Works
+The system enforces four hard guardrails at the Pydantic schema layer — not just in the prompt:
 
-1. The playbook document is loaded and split into 1000-character chunks with 150-character overlap using `RecursiveCharacterTextSplitter`.
-2. Each chunk is embedded using `GoogleGenerativeAIEmbeddings` (`gemini-embedding-001`).
-3. Embeddings are persisted to `chroma_db/<playbook_stem>/`.
-4. A `.playbook_hash` file (JSON) is written alongside the DB containing the MD5 hash, filename, and build timestamp.
+### Guardrail 1 — Mandatory Verbatim Quotation
 
-### Hybrid Retrieval (Tool 2)
+`verbatim_text` in `ExtractedClause` is validated by a `@field_validator` that rejects responses matching known summarization patterns (e.g. "this section outlines", "the parties agree that"). If the LLM summarizes instead of copying, the Pydantic validation fails and the pipeline raises an error.
+
+### Guardrail 2 — Zero-Inference Rule
+
+`factual_conflict` in `RiskAnalysis` is validated against a list of banned inference phrases: "may imply", "could suggest", "appears to", "seems to", "likely means", "probably", "it is possible", "might indicate". Any response containing these phrases fails validation.
+
+### Guardrail 3 — Risk Level Enforcement
+
+`risk_level` must be exactly `High`, `Medium`, or `Low` (case-insensitive, then capitalized). Any other value fails validation immediately.
+
+### Guardrail 4 — Guardrail Confirmation
+
+`guardrail_note` must explicitly state:
+> *"Analysis based solely on literal text comparison. No legal advice provided. No intent inferred."*
+
+This is enforced in the system prompt and verified in the output structure.
+
+---
+
+## RAG Implementation
+
+### Playbook Chunking (`main.py`)
+
+Documents are split using `RecursiveCharacterTextSplitter` with a paragraph-first separator hierarchy:
+
+```python
+separators=["\n\n", "\n", ".", " ", ""]
+chunk_size=1000
+chunk_overlap=150
+```
+
+This ensures complete legal clauses are preserved within a single chunk rather than being split at arbitrary token counts.
+
+### Hybrid Retrieval (`app.py` — Tool 2)
 
 Tool 2 uses an `EnsembleRetriever` combining:
-- **BM25Retriever** (50% weight) — keyword-based sparse retrieval over the full document set
-- **Chroma vector retriever** (50% weight) — semantic dense retrieval, top-3 results
+- **BM25** (keyword matching, weight 0.5) — good for exact legal terminology
+- **ChromaDB vector search** (semantic matching, weight 0.5) — good for conceptually similar clauses
 
-This hybrid approach ensures that both exact legal terminology (BM25 strength) and semantic similarity (vector strength) contribute to each query.
+Each clause topic is queried independently against the ensemble retriever with `k=3` results per retriever, giving up to 6 unique playbook passages per clause.
 
-### Per-Playbook Isolation
+### Change Detection (`main.py`)
 
-Each playbook file gets its own ChromaDB subfolder named after the playbook stem (with special characters replaced by underscores). This means:
-- Switching playbooks does not require a rebuild if that playbook was previously embedded
-- Rebuilding one playbook does not affect other playbooks
-- The UI "System Status" panel checks the correct subfolder for the currently selected playbook
+Each playbook gets its own ChromaDB subfolder named after the playbook stem (sanitised). An MD5 hash of the playbook file is stored in `.playbook_hash`. On startup, the hash is recomputed. If it matches — load from disk. If it differs — delete old DB and rebuild automatically. This means replacing a playbook file and clicking "Rebuild" is all that's needed.
 
 ---
 
-## PDF Export
+## Database Design
 
-The PDF report is generated entirely in-memory using `reportlab` and served via Streamlit's `st.download_button`. No temporary files are written to disk.
+### SQLite — `dept.db`
 
-Report contents:
-- Header with analyzed document name
-- Per-clause sections with: risk level (color-coded), factual conflict statement, client verbatim text (monospace), company standard verbatim text (monospace)
-- Horizontal rule separators between clauses
+Used for department metadata. WAL (Write-Ahead Logging) mode enabled for safe concurrent reads.
 
----
+```sql
+CREATE TABLE departments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    UNIQUE NOT NULL,
+    head_name   TEXT    NOT NULL DEFAULT '',
+    head_email  TEXT    NOT NULL DEFAULT '',
+    head_phone  TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL,
+    updated_at  TEXT    NOT NULL
+);
+```
 
-## Sidebar Legal Assistant (RAG Chatbot)
+### JSON Logs
 
-The chatbot (`chatbot_component.py`) runs as an embedded sidebar panel using Gemini 2.5 Flash. On every message:
+| File | Purpose | Written by | Read by |
+|---|---|---|---|
+| `token_log.json` | One entry per LLM API call | `logger.log_token_event()` | Admin Tab 2, Tab 4 |
+| `history_log.json` | One entry per completed pipeline run | `logger.log_run()` | Admin Tab 3, Tab 4 |
 
-1. If a playbook is selected and its ChromaDB exists, the user's message is used to query ChromaDB for top-3 relevant chunks.
-2. Retrieved chunks are injected into a dynamic system prompt alongside current application state (playbook names, selected playbook).
-3. The LLM responds with context from the actual playbook document.
-4. If ChromaDB is not built, the chatbot falls back to general knowledge about the application.
-
-This means users can ask questions like "What is the liability cap in our playbook?" and receive answers grounded in the actual document text.
-
----
-
-## Troubleshooting
-
-### "ChromaDB Online — No hash record" in System Status
-The database exists but was built without hash metadata (older build). Click **Rebuild Playbook DB** to regenerate with a hash file.
-
-### "No DB for this playbook — click Rebuild Playbook DB"
-No ChromaDB exists for the currently selected playbook. Either run `python main.py` from the terminal or click **Rebuild Playbook DB** in the sidebar.
-
-### Extraction feels too short / summarized
-Tool 1 extracted a summary instead of verbatim text. This can happen with very large contracts. The Pydantic validator will catch obvious summaries. If it passes but still looks like a summary, try selecting fewer clauses per run, or split the analysis into multiple runs.
-
-### "GUARDRAIL: verbatim_text is a summary"
-Pydantic rejected the LLM output for that clause because it detected summary language. Click **Reject** in the HITL gate, re-select the clause, and re-analyze. On retry, the LLM usually produces a more faithful extraction.
-
-### Chatbot gives generic answers instead of playbook-specific answers
-The ChromaDB for the selected playbook has not been built yet. Click **Rebuild Playbook DB** and wait for the build to complete before asking playbook-specific questions.
-
-### Upload shows "already exists" warning on every page refresh
-This is expected behavior. The `processed_uploads` set is per-session. Refreshing the page resets the session. The file is not re-written if it already exists on disk — only the warning reappears.
-
-### `ValueError: CRITICAL: GEMINI_API_KEY is not set`
-The `.env` file is missing or the key is not named `GEMINI_API_KEY`. Check that `.env` exists in the project root and contains a valid key.
+Both files are append-only. All write operations are wrapped in `try/except` so a logging failure can never crash the main pipeline.
 
 ---
 
-## Development Notes
+## API & Token Cost Reference
 
-### Module Responsibilities
+Token costs are estimated using character-count approximation (`len(text) // 4 ≈ tokens`) and Gemini 2.5 Flash pricing:
 
-| File | Responsibility |
+| Token Type | Price |
 |---|---|
-| `app.py` | Application entry point, session state, sidebar, pipeline orchestration, all Streamlit callbacks |
-| `ui_components.py` | Pure presentation layer — zero business logic, zero LLM calls (except HITL state writes) |
-| `chatbot_component.py` | Sidebar chatbot with RAG — self-contained, imported once by `app.py` |
-| `main.py` | ChromaDB builder — can be run standalone (`python main.py`) or called by `app.py` via `initialize_playbook_db()` |
+| Input tokens | $0.075 per 1M tokens |
+| Output tokens | $0.30 per 1M tokens |
 
-### Session State Keys
+To update pricing, edit the constants in `logger.py`:
 
-| Key | Type | Purpose |
-|---|---|---|
-| `discovered_clauses` | `list[str]` | Section headings from discovery scan |
-| `extracted_data` | `ContractData` | Tool 1 output (Pydantic model) |
-| `hitl_approved` | `bool` | Whether human has approved Tool 1 output |
-| `rejected_flag` | `bool` | Whether human rejected the extraction |
-| `final_report` | `FinalRiskReport` | Tool 3 output (Pydantic model) |
-| `agent_log` | `list[dict]` | ReAct trace entries |
-| `selected_client` | `str` | Currently selected client contract filename |
-| `selected_clauses` | `list[str]` | Clauses selected for analysis |
-| `tool2_result` | `str` | Raw playbook retrieval text from Tool 2 |
-| `pipeline_stage` | `int` | Current pipeline stage (0–4) |
-| `last_client` | `str` | Previous client (for auto-reset detection) |
-| `processed_uploads` | `set` | Filenames already processed this session |
-| `chatbot_history` | `list[dict]` | Sidebar chatbot conversation history |
-
-### Adding a New Guardrail
-
-1. Add a `@field_validator` to the relevant Pydantic model in `app.py` Section 4.
-2. Add the guardrail description to the LLM prompt in the relevant tool in Section 7.
-3. Verify the guardrail activates by testing with a prompt that should fail.
-
-### Adding a New Tool
-
-1. Define the tool function inside `make_tools()` using the `@tool` decorator.
-2. Add `log_step()` calls for Thought, Action, and Observation.
-3. Append the new tool to the returned list.
-4. Add the corresponding pipeline stage and status bar entry in `ui_components.py`.
+```python
+PRICE_INPUT_PER_1M  = 0.075
+PRICE_OUTPUT_PER_1M = 0.30
+```
 
 ---
 
+## Git Tags & Versioning
+
+| Tag | Description |
+|---|---|
+| `v1.0-working-baseline` | Original working pipeline — before admin panel addition |
+| `v2.0-admin-panel-complete` | Full admin panel with all 4 tabs, department management, SQLite, exports |
+
+To revert to a previous tag:
+
+```bash
+# Go back to v1 (original pipeline only)
+git checkout v1.0-working-baseline
+
+# Go back to v2 (with admin panel)
+git checkout v2.0-admin-panel-complete
+
+# Return to latest
+git checkout main
+```
+
+---
+
+## Known Limitations
+
+- **Token count approximation** — Token counts are estimated using character length divided by 4. Actual counts may vary by ±10–15%. The Gemini LangChain wrapper does expose `usage_metadata` for exact counts — this can be integrated in a future update.
+- **Concurrent write safety** — `token_log.json` and `history_log.json` use simple file-level read/write. Under high concurrent load (multiple users finishing a pipeline simultaneously), a last-write-wins race condition is possible. Migrating logs to SQLite would resolve this.
+- **ChromaDB rebuild lock** — If two users trigger a playbook rebuild simultaneously, both will attempt to delete and recreate the same ChromaDB subfolder. A file lock around the rebuild process would prevent this.
+- **Single server deployment** — The application is designed for single-server use. It is not horizontally scalable in its current form.
+
+---
+
+## Future Improvements
+
+- Exact token counts from Gemini `usage_metadata` API response field
+- Migrate `token_log.json` and `history_log.json` to SQLite for concurrent-safe logging
+- ChromaDB rebuild mutex lock for multi-user safety
+- Role-based access control (analyst vs admin vs read-only)
+- Email notification when a HIGH risk clause is detected
+- Batch contract analysis (process multiple contracts against the same playbook)
+- Contract comparison mode (compare two versions of the same contract)
+- Audit trail — track which human approved which HITL gate and when
+- Docker containerisation for one-command deployment
+
+---
+
+## License
+
+This project was built as part of an AI engineering internship. All rights reserved.
+
+---
+
+*Built with LangChain · Google Gemini · ChromaDB · Streamlit · ReportLab · SQLite*

@@ -101,5 +101,35 @@
         "factual_conflict": "The company standard does not contain provisions regarding Initech's right to determine the manner and means of services, personnel reassignment, the impact of client delays on Initech's obligations and client's fees, or Initech's right to engage subcontractors without client consent."
       }
     ]
+  },
+  {
+    "run_id": "20260326113753",
+    "timestamp": "2026-03-26T11:37:53",
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT",
+    "clauses_selected": [
+      "SECTION 6: CONFIDENTIALITY",
+      "SECTION 7: DATA PROTECTION AND PRIVACY"
+    ],
+    "clause_count": 2,
+    "high_count": 0,
+    "medium_count": 1,
+    "low_count": 1,
+    "total_tokens": 28538,
+    "clause_detail": [
+      {
+        "clause_name": "SECTION 6: CONFIDENTIALITY",
+        "risk_level": "Medium",
+        "conflict_found": false,
+        "factual_conflict": "The client contract includes specific clauses regarding confidentiality obligations and survival period, while the company standard does not contain a corresponding section on confidentiality."
+      },
+      {
+        "clause_name": "SECTION 7: DATA PROTECTION AND PRIVACY",
+        "risk_level": "Low",
+        "conflict_found": false,
+        "factual_conflict": "The client contract's data protection and privacy clauses are consistent with the company standard's requirements."
+      }
+    ]
   }
 ]

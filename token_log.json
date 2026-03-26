@@ -154,5 +154,70 @@
     "client_file": "Initech_Inc_MSA_HIGH_RISK_2025.docx",
     "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
     "department": ""
+  },
+  {
+    "timestamp": "2026-03-26T11:36:02",
+    "tool_name": "Discovery Scan",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 6647,
+    "output_tokens": 182,
+    "total_tokens": 6829,
+    "cost_usd": 0.000553,
+    "duration_ms": 3541,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": ""
+  },
+  {
+    "timestamp": "2026-03-26T11:36:31",
+    "tool_name": "Discovery Scan",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 6647,
+    "output_tokens": 182,
+    "total_tokens": 6829,
+    "cost_usd": 0.000553,
+    "duration_ms": 3976,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT"
+  },
+  {
+    "timestamp": "2026-03-26T11:36:55",
+    "tool_name": "Tool 1 — Extract",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 6663,
+    "output_tokens": 669,
+    "total_tokens": 7332,
+    "cost_usd": 0.0007,
+    "duration_ms": 5025,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT"
+  },
+  {
+    "timestamp": "2026-03-26T11:37:12",
+    "tool_name": "Tool 2 — Playbook",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 16,
+    "output_tokens": 2505,
+    "total_tokens": 2521,
+    "cost_usd": 0.000753,
+    "duration_ms": 0,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT"
+  },
+  {
+    "timestamp": "2026-03-26T11:37:53",
+    "tool_name": "Tool 3 — Report",
+    "model": "gemini-2.5-flash",
+    "input_tokens": 5755,
+    "output_tokens": 6101,
+    "total_tokens": 11856,
+    "cost_usd": 0.002262,
+    "duration_ms": 40788,
+    "client_file": "ACME_Corp_MSA_LOW_RISK_2025.docx",
+    "playbook_file": "Globex_Corp_Standard_Vendor_Playbook_v4.2.docx",
+    "department": "IT"
   }
 ]
